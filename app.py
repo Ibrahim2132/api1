@@ -1,51 +1,63 @@
-# ... (Imports and App Setup remain the same) ...
+# --- START OF FILE app.py ---
 import os
 import json
 import uuid
+import sys # استيراد sys للخروج عند الخطأ إذا لزم الأمر
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
-basedir = os.path.abspath(os.path.dirname(__file__)) # لا يزال مفيدًا لحسابات أخرى
+# --- تحديد المسارات ---
+# هام جداً: تأكد أن هذا هو "Mount Path" الصحيح للقرص الدائم في Render
+persistent_data_dir = '/tmp'
+db_path = os.path.join(persistent_data_dir, 'database.db')
+UPLOAD_FOLDER = os.path.join(persistent_data_dir, 'uploads')
+db_dir = os.path.dirname(db_path) # مجلد قاعدة البيانات
 
-# --- استخدم مسار القرص الدائم ---
-persistent_data_dir = '/tmp' # المسار الذي حددته كنقطة تركيب للقرص
-db_path = os.path.join(persistent_data_dir, 'database.db') # ضع قاعدة البيانات داخل القرص
-UPLOAD_FOLDER = os.path.join(persistent_data_dir, 'uploads') # ضع مجلد الرفع داخل القرص أيضًا
+# --- التأكد من وجود المجلدات الضرورية قبل إعداد التطبيق ---
+# هذا مهم لأن SQLAlchemy قد يحاول إنشاء الملف مباشرة
+try:
+    print(f"Ensuring directory exists: {db_dir}")
+    os.makedirs(db_dir, exist_ok=True) # تأكد من وجود مجلد قاعدة البيانات
+    print(f"Ensuring directory exists: {UPLOAD_FOLDER}")
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True) # تأكد من وجود مجلد الرفع
+    print("Required directories checked/created.")
+except OSError as e:
+    print(f"FATAL ERROR: Could not create necessary directories at {persistent_data_dir}. Check permissions/mount point. Error: {e}")
+    # الخروج من البرنامج إذا لم نتمكن من إنشاء المجلدات الأساسية
+    sys.exit(f"Directory creation failed: {e}")
 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True) # تأكد من وجود مجلد الرفع
-# --- ---
 
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+# --- إعداد التطبيق و SQLAlchemy ---
 app = Flask(__name__)
-# --- استخدم المسار الجديد لقاعدة البيانات ---
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + db_path
-# --- ---
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# هام: أضف مفتاحًا سريًا! الأفضل تحميله من متغير بيئة
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'ضع-مفتاح-سري-قوي-هنا-للانتاج')
+if app.config['SECRET_KEY'] == 'ضع-مفتاح-سري-قوي-هنا-للانتاج' and os.environ.get('FLASK_ENV') != 'development':
+     print("WARNING: Using default SECRET_KEY in a non-development environment!")
+
 db = SQLAlchemy(app)
 
-# --- جداول الربط للمفضلة ---
+# --- تعريف موديلات قاعدة البيانات وجداول الربط ---
 
 # جدول لربط المستخدمين بالإعلانات العامة المفضلة
 user_favorite_advertisement = db.Table('user_favorite_advertisement',
     db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
     db.Column('advertisement_id', db.Integer, db.ForeignKey('advertisement.id'), primary_key=True)
 )
-
 # جدول لربط المستخدمين بإعلانات السيارات المفضلة
 user_favorite_car = db.Table('user_favorite_car',
     db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
     db.Column('car_advertisement_id', db.Integer, db.ForeignKey('car_advertisement.id'), primary_key=True)
 )
-
 # جدول لربط المستخدمين بإعلانات العقارات المفضلة
 user_favorite_real_estate = db.Table('user_favorite_real_estate',
     db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
     db.Column('real_estate_advertisement_id', db.Integer, db.ForeignKey('real_estate_advertisement.id'), primary_key=True)
 )
-
 
 # --- تعريف موديل المستخدم (User Model) ---
 class User(db.Model):
@@ -53,24 +65,12 @@ class User(db.Model):
     name = db.Column(db.String(80), nullable=False)
     phone_number = db.Column(db.String(20), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
-    # is_admin = db.Column(db.Boolean, default=False, nullable=False)
-
-    # علاقات الإعلانات المنشورة
-    advertisements = db.relationship('Advertisement', backref='author', lazy='dynamic') # Changed to dynamic
-    car_advertisements = db.relationship('CarAdvertisement', backref='author', lazy='dynamic') # Changed to dynamic
-    real_estate_advertisements = db.relationship('RealEstateAdvertisement', backref='author', lazy='dynamic') # Changed to dynamic
-
-    # --- علاقات المفضلة ---
-    favorite_ads = db.relationship('Advertisement', secondary=user_favorite_advertisement,
-                                   lazy='dynamic', # Use dynamic loading
-                                   back_populates='favorited_by_users')
-    favorite_car_ads = db.relationship('CarAdvertisement', secondary=user_favorite_car,
-                                       lazy='dynamic',
-                                       back_populates='favorited_by_users')
-    favorite_real_estate_ads = db.relationship('RealEstateAdvertisement', secondary=user_favorite_real_estate,
-                                             lazy='dynamic',
-                                             back_populates='favorited_by_users')
-
+    advertisements = db.relationship('Advertisement', backref='author', lazy='dynamic')
+    car_advertisements = db.relationship('CarAdvertisement', backref='author', lazy='dynamic')
+    real_estate_advertisements = db.relationship('RealEstateAdvertisement', backref='author', lazy='dynamic')
+    favorite_ads = db.relationship('Advertisement', secondary=user_favorite_advertisement, lazy='dynamic', back_populates='favorited_by_users')
+    favorite_car_ads = db.relationship('CarAdvertisement', secondary=user_favorite_car, lazy='dynamic', back_populates='favorited_by_users')
+    favorite_real_estate_ads = db.relationship('RealEstateAdvertisement', secondary=user_favorite_real_estate, lazy='dynamic', back_populates='favorited_by_users')
     def set_password(self, password): self.password_hash = generate_password_hash(password)
     def check_password(self, password): return check_password_hash(self.password_hash, password)
     def to_dict(self): return {"id": self.id, "name": self.name, "phone_number": self.phone_number}
@@ -79,33 +79,21 @@ class User(db.Model):
 # --- تعريف موديل الإعلان العام (Advertisement Model) ---
 class Advertisement(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    # ... (other fields) ...
     category = db.Column(db.String(100), nullable=False); type = db.Column(db.String(100), nullable=False)
     city = db.Column(db.String(100), nullable=False); subcity = db.Column(db.String(100), nullable=True)
     title = db.Column(db.String(200), nullable=False); description = db.Column(db.Text, nullable=False)
     phone_number = db.Column(db.String(20), nullable=False); price = db.Column(db.Float, nullable=False)
     images = db.Column(db.Text, nullable=True); user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     is_approved = db.Column(db.Boolean, default=False, nullable=False, index=True)
-    # --- علاقة عكسية للمستخدمين الذين فضلوا هذا الإعلان ---
-    favorited_by_users = db.relationship('User', secondary=user_favorite_advertisement,
-                                         lazy='dynamic', # Use dynamic loading
-                                         back_populates='favorite_ads')
-
+    favorited_by_users = db.relationship('User', secondary=user_favorite_advertisement, lazy='dynamic', back_populates='favorite_ads')
     def to_dict(self):
         image_list = json.loads(self.images) if self.images else []
-        return {
-            "id": self.id, "category": self.category, "type": self.type, "city": self.city,
-            "subcity": self.subcity, "title": self.title, "description": self.description,
-            "phone_number": self.phone_number, "price": self.price, "images": image_list,
-            "user_id": self.user_id, "is_approved": self.is_approved
-        }
+        return {"id": self.id, "category": self.category, "type": self.type, "city": self.city, "subcity": self.subcity, "title": self.title, "description": self.description, "phone_number": self.phone_number, "price": self.price, "images": image_list, "user_id": self.user_id, "is_approved": self.is_approved}
     def __repr__(self): return f'<Advertisement {self.id} - {self.title} (Approved: {self.is_approved})>'
-
 
 # --- تعريف موديل إعلان السيارة (CarAdvertisement Model) ---
 class CarAdvertisement(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    # ... (other fields) ...
     city = db.Column(db.String(100), nullable=False); subcity = db.Column(db.String(100), nullable=True)
     title = db.Column(db.String(200), nullable=False); description = db.Column(db.Text, nullable=False)
     phone_number = db.Column(db.String(20), nullable=False); price = db.Column(db.Float, nullable=False)
@@ -113,28 +101,15 @@ class CarAdvertisement(db.Model):
     state = db.Column(db.String(50), nullable=False); car_category = db.Column(db.String(100), nullable=False)
     car_subcategory = db.Column(db.String(100), nullable=False); modelyear = db.Column(db.Integer, nullable=False)
     kilometer = db.Column(db.Integer, nullable=False); is_approved = db.Column(db.Boolean, default=False, nullable=False, index=True)
-    # --- علاقة عكسية للمستخدمين الذين فضلوا هذا الإعلان ---
-    favorited_by_users = db.relationship('User', secondary=user_favorite_car,
-                                         lazy='dynamic',
-                                         back_populates='favorite_car_ads')
-
+    favorited_by_users = db.relationship('User', secondary=user_favorite_car, lazy='dynamic', back_populates='favorite_car_ads')
     def to_dict(self):
         image_list = json.loads(self.images) if self.images else []
-        return {
-            "id": self.id, "city": self.city, "subcity": self.subcity, "title": self.title,
-            "description": self.description, "phone_number": self.phone_number,
-            "price": self.price, "images": image_list, "user_id": self.user_id,
-            "state": self.state, "car_category": self.car_category,
-            "car_subcategory": self.car_subcategory, "modelyear": self.modelyear,
-            "kilometer": self.kilometer, "is_approved": self.is_approved
-        }
+        return {"id": self.id, "city": self.city, "subcity": self.subcity, "title": self.title, "description": self.description, "phone_number": self.phone_number, "price": self.price, "images": image_list, "user_id": self.user_id, "state": self.state, "car_category": self.car_category, "car_subcategory": self.car_subcategory, "modelyear": self.modelyear, "kilometer": self.kilometer, "is_approved": self.is_approved}
     def __repr__(self): return f'<CarAdvertisement {self.id} - {self.title} (Approved: {self.is_approved})>'
-
 
 # --- تعريف موديل إعلان العقار (RealEstateAdvertisement Model) ---
 class RealEstateAdvertisement(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    # ... (other fields) ...
     city = db.Column(db.String(100), nullable=False); subcity = db.Column(db.String(100), nullable=True)
     title = db.Column(db.String(200), nullable=False); description = db.Column(db.Text, nullable=False)
     phone_number = db.Column(db.String(20), nullable=False); price = db.Column(db.Float, nullable=False)
@@ -142,43 +117,122 @@ class RealEstateAdvertisement(db.Model):
     type = db.Column(db.String(100), nullable=False); distance = db.Column(db.Float, nullable=True)
     num_bed = db.Column(db.Integer, nullable=False); num_bath = db.Column(db.Integer, nullable=False)
     is_approved = db.Column(db.Boolean, default=False, nullable=False, index=True)
-    # --- علاقة عكسية للمستخدمين الذين فضلوا هذا الإعلان ---
-    favorited_by_users = db.relationship('User', secondary=user_favorite_real_estate,
-                                         lazy='dynamic',
-                                         back_populates='favorite_real_estate_ads')
-
+    favorited_by_users = db.relationship('User', secondary=user_favorite_real_estate, lazy='dynamic', back_populates='favorite_real_estate_ads')
     def to_dict(self):
         image_list = json.loads(self.images) if self.images else []
-        return {
-            "id": self.id, "city": self.city, "subcity": self.subcity, "title": self.title,
-            "description": self.description, "phone_number": self.phone_number,
-            "price": self.price, "images": image_list, "user_id": self.user_id,
-            "type": self.type, "distance": self.distance, "num_bed": self.num_bed,
-            "num_bath": self.num_bath, "is_approved": self.is_approved
-        }
+        return {"id": self.id, "city": self.city, "subcity": self.subcity, "title": self.title, "description": self.description, "phone_number": self.phone_number, "price": self.price, "images": image_list, "user_id": self.user_id, "type": self.type, "distance": self.distance, "num_bed": self.num_bed, "num_bath": self.num_bath, "is_approved": self.is_approved}
     def __repr__(self): return f'<RealEstateAdvertisement {self.id} - {self.title} (Approved: {self.is_approved})>'
 
 
-# --- دالة مساعدة للتحقق من امتداد الملف ---
+# --- تهيئة قاعدة البيانات (إنشاء الجداول إذا لم تكن موجودة) ---
+# هذا الكود يتم تشغيله مرة واحدة عند بدء تشغيل التطبيق (استيراد الوحدة)
+# نستخدم app.app_context() لضمان توفر سياق التطبيق لـ SQLAlchemy
+try:
+    with app.app_context():
+        print(f"Initializing database tables at: {db_path}...")
+        db.create_all() # يقوم بإنشاء الجداول المعرفة أعلاه إذا لم تكن موجودة
+        print("Database tables checked/created successfully.")
+except Exception as e:
+    # من المهم تسجيل هذا الخطأ لأنه قد يمنع التطبيق من العمل بشكل صحيح
+    print(f"FATAL ERROR during initial db.create_all(): {e}")
+    # يمكنك اختيار الخروج هنا لمنع بدء تشغيل التطبيق مع قاعدة بيانات غير مهيأة
+    sys.exit(f"Database initialization failed: {e}")
+
+
+# --- دوال مساعدة وامتدادات مسموحة ---
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+
 def allowed_file(filename):
-    # ... (تبقى كما هي) ...
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# ... (بقية الدوال المساعدة: _handle_image_upload, _save_entity) ...
+def _handle_image_upload():
+    uploaded_filenames = []
+    if 'images' in request.files:
+        image_files = request.files.getlist('images')
+        for file in image_files:
+            if file and file.filename != '' and allowed_file(file.filename):
+                original_filename = secure_filename(file.filename)
+                unique_suffix = str(uuid.uuid4().hex)[:8]
+                filename = f"{unique_suffix}_{original_filename}"
+                save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                try: file.save(save_path); uploaded_filenames.append(filename)
+                except Exception as e:
+                    app.logger.error(f"Err saving {filename}: {e}")
+                    # محاولة حذف الملفات التي تم رفعها بالفعل في حالة حدوث خطأ
+                    for fname in uploaded_filenames:
+                        try: os.remove(os.path.join(app.config['UPLOAD_FOLDER'], fname))
+                        except OSError: pass # تجاهل الخطأ إذا لم يتم العثور على الملف
+                    # لا ترجع خطأ 500 هنا مباشرة، فقط أرجع قائمة فارغة أو مؤشر خطأ
+                    # سنعتمد على معالجة الأخطاء في _save_entity
+                    return None # أو أثر استثناء مخصص
+            elif file and file.filename != '': app.logger.warning(f"Skip disallowed: {file.filename}")
+    return uploaded_filenames
+
+def _save_entity(entity, uploaded_filenames):
+    # تحقق مما إذا كان _handle_image_upload قد أرجع None (مؤشر خطأ)
+    if uploaded_filenames is None:
+         return jsonify({"error": "Error processing uploaded images"}), 500
+    try:
+        # تعيين الصور فقط إذا كانت هناك ملفات مرفوعة
+        if uploaded_filenames:
+            entity.images = json.dumps(uploaded_filenames)
+        else:
+             # تأكد من أن الحقل فارغ إذا لم يتم رفع صور أو إذا كانت كلها غير مسموحة
+             entity.images = None
+
+        db.session.add(entity)
+        db.session.commit()
+        entity_type = entity.__class__.__name__.lower().replace("advertisement", "")
+        if not entity_type or entity_type == "advertisement": entity_type = "advertisement" # التعامل مع الحالة الأساسية
+        entity_dict = entity.to_dict() # احصل على القاموس بعد الـ commit (للحصول على الـ ID)
+        return jsonify({"message": f"{entity_type.replace('_',' ').capitalize()} submitted for approval!", "advertisement": entity_dict}), 201
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Err creating {entity.__class__.__name__} (User: {getattr(entity, 'user_id', 'N/A')}): {e}", exc_info=True) # إضافة تفاصيل الخطأ
+        # حذف الملفات المرفوعة في حالة فشل قاعدة البيانات
+        if uploaded_filenames:
+            for filename in uploaded_filenames:
+                try:
+                    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                    if os.path.exists(filepath):
+                         os.remove(filepath)
+                         app.logger.info(f"Cleaned up image {filename} after DB error.")
+                except OSError:
+                    app.logger.error(f"Could not remove {filename} after db error.")
+        return jsonify({"error": f"Internal server error creating {entity_type}"}), 500
+
+
 # --- نقاط النهاية للمستخدمين (Register, Login, Get Profile) ---
-# ... (تبقى كما هي) ...
 @app.route('/register', methods=['POST'])
-def register(): # ... (الكود كما هو)
+def register():
     if not request.is_json: return jsonify({"error": "Missing JSON in request"}), 400
     data = request.get_json()
-    name, password, phone_number = data.get('name'), data.get('password'), data.get('phone_number')
-    if not name or not password or not phone_number: return jsonify({"error": "Missing required fields"}), 400
-    if User.query.filter_by(phone_number=phone_number).first(): return jsonify({"error": "Phone number already registered"}), 409
+    name = data.get('name')
+    password = data.get('password')
+    phone_number = data.get('phone_number')
+
+    if not name or not password or not phone_number:
+        return jsonify({"error": "Missing required fields (name, password, phone_number)"}), 400
+
+    # التحقق يتم الآن بأمان لأن الجداول مضمونة الوجود (نظريًا)
+    if User.query.filter_by(phone_number=phone_number).first():
+        return jsonify({"error": "Phone number already registered"}), 409
+
     new_user = User(name=name, phone_number=phone_number)
     new_user.set_password(password)
-    try: db.session.add(new_user); db.session.commit()
-    except Exception as e: db.session.rollback(); app.logger.error(f"Reg Err: {e}"); return jsonify({"error":"ISE"}),500
+    try:
+        db.session.add(new_user)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Registration Error for phone {phone_number}: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error during registration"}), 500 # رسالة عامة للمستخدم
+
     return jsonify({"message": "User registered successfully!", "user": new_user.to_dict()}), 201
 
+# ... (بقية نقاط النهاية: login, get_user_profile, add_advertisement, add_car, add_re, get_all, admin, favorites) ...
+# (الكود الخاص بنقاط النهاية الأخرى يبقى كما هو)
 @app.route('/login', methods=['POST'])
 def login(): # ... (الكود كما هو)
     if not request.is_json: return jsonify({"error": "Missing JSON in request"}), 400
@@ -193,281 +247,211 @@ def get_user_profile(user_id): # ... (الكود كما هو)
     user = User.query.get_or_404(user_id)
     return jsonify({"user": user.to_dict()}), 200
 
-# --- دوال مساعدة للإضافة والحفظ ورفع الصور ---
-# ... ( _handle_image_upload, _save_entity تبقى كما هي) ...
-def _handle_image_upload():
-    uploaded_filenames = []
-    if 'images' in request.files:
-        image_files = request.files.getlist('images')
-        for file in image_files:
-            if file and file.filename != '' and allowed_file(file.filename):
-                original_filename = secure_filename(file.filename)
-                unique_suffix = str(uuid.uuid4().hex)[:8]
-                filename = f"{unique_suffix}_{original_filename}"
-                save_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-                try: file.save(save_path); uploaded_filenames.append(filename)
-                except Exception as e:
-                    app.logger.error(f"Err saving {filename}: {e}")
-                    for fname in uploaded_filenames:
-                        try: os.remove(os.path.join(app.config['UPLOAD_FOLDER'], fname))
-                        except OSError: pass
-                    return jsonify({"error": "Error saving images"}), 500
-            elif file and file.filename != '': app.logger.warning(f"Skip disallowed: {file.filename}")
-    return uploaded_filenames
-
-def _save_entity(entity, uploaded_filenames):
-    try:
-        db.session.add(entity); db.session.commit()
-        entity_type = entity.__class__.__name__.lower().replace("advertisement", "")
-        if not entity_type or entity_type == "advertisement": entity_type = "advertisement"
-        return jsonify({"message": f"{entity_type.replace('_',' ').capitalize()} submitted for approval!", "advertisement": entity.to_dict()}), 201
-    except Exception as e:
-        db.session.rollback(); app.logger.error(f"Err creating {entity.__class__.__name__}: {e}")
-        for filename in uploaded_filenames:
-            try: os.remove(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-            except OSError: app.logger.error(f"Could not rm {filename} after db error.")
-        return jsonify({"error": f"Internal error creating {entity_type}"}), 500
-
 # --- نقاط النهاية لإضافة الإعلانات (POST) ---
-# ... ( add_advertisement, add_car_advertisement, add_real_estate_advertisement تبقى كما هي ) ...
 @app.route('/advertisements', methods=['POST'])
 def add_advertisement():
     required=['user_id', 'category', 'type', 'city', 'title', 'description', 'phone_number', 'price']
     form=request.form; missing=[f for f in required if f not in form];
-    if missing: return jsonify({"error": f"Missing: {', '.join(missing)}"}), 400
+    if missing: return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
     uid=form.get('user_id'); user=User.query.get(uid);
-    if user is None: return jsonify({"error": f"User {uid} not found"}), 404
+    if user is None: return jsonify({"error": f"User with id {uid} not found"}), 404
     try: price=float(form.get('price'))
-    except: return jsonify({"error": "Invalid price"}), 400
+    except ValueError: return jsonify({"error": "Invalid price format"}), 400
+
     uploads=_handle_image_upload();
-    if isinstance(uploads,tuple): return uploads
-    new_ad = Advertisement(user_id=uid, category=form.get('category'), type=form.get('type'), city=form.get('city'), subcity=form.get('subcity'), title=form.get('title'), description=form.get('description'), phone_number=form.get('phone_number'), price=price, images=json.dumps(uploads) if uploads else None)
-    return _save_entity(new_ad, uploads)
+    if uploads is None: # تحقق من الخطأ أثناء الرفع
+         return jsonify({"error": "Failed to process or save uploaded images."}), 500
+
+    new_ad = Advertisement(user_id=uid, category=form.get('category'), type=form.get('type'), city=form.get('city'), subcity=form.get('subcity'), title=form.get('title'), description=form.get('description'), phone_number=form.get('phone_number'), price=price) # لا نضع الصور هنا بعد
+    return _save_entity(new_ad, uploads) # _save_entity سيهتم بالصور وقاعدة البيانات
+
 @app.route('/car_advertisements', methods=['POST'])
 def add_car_advertisement():
     required=['user_id','city','title','description','phone_number','price','state','car_category','car_subcategory','modelyear','kilometer']
     form=request.form; missing=[f for f in required if f not in form];
-    if missing: return jsonify({"error": f"Missing: {', '.join(missing)}"}), 400
+    if missing: return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
     uid=form.get('user_id'); user=User.query.get(uid);
-    if user is None: return jsonify({"error": f"User {uid} not found"}), 404
+    if user is None: return jsonify({"error": f"User with id {uid} not found"}), 404
     try: price=float(form.get('price'))
-    except: return jsonify({"error": "Invalid price"}), 400
+    except ValueError: return jsonify({"error": "Invalid price format"}), 400
     try: modelyear=int(form.get('modelyear'))
-    except: return jsonify({"error": "Invalid modelyear"}), 400
+    except ValueError: return jsonify({"error": "Invalid modelyear format"}), 400
     try: km=int(form.get('kilometer'))
-    except: return jsonify({"error": "Invalid kilometer"}), 400
+    except ValueError: return jsonify({"error": "Invalid kilometer format"}), 400
+
     uploads=_handle_image_upload();
-    if isinstance(uploads,tuple): return uploads
-    new_car=CarAdvertisement(user_id=uid,city=form.get('city'),subcity=form.get('subcity'),title=form.get('title'),description=form.get('description'),phone_number=form.get('phone_number'),price=price,images=json.dumps(uploads) if uploads else None,state=form.get('state'),car_category=form.get('car_category'),car_subcategory=form.get('car_subcategory'),modelyear=modelyear,kilometer=km)
+    if uploads is None: return jsonify({"error": "Failed to process or save uploaded images."}), 500
+
+    new_car=CarAdvertisement(user_id=uid,city=form.get('city'),subcity=form.get('subcity'),title=form.get('title'),description=form.get('description'),phone_number=form.get('phone_number'),price=price,state=form.get('state'),car_category=form.get('car_category'),car_subcategory=form.get('car_subcategory'),modelyear=modelyear,kilometer=km)
     return _save_entity(new_car, uploads)
+
 @app.route('/real_estate_advertisements', methods=['POST'])
 def add_real_estate_advertisement():
     required=['user_id','city','title','description','phone_number','price','type','num_bed','num_bath']
     form=request.form; missing=[f for f in required if f not in form];
-    if missing: return jsonify({"error": f"Missing: {', '.join(missing)}"}), 400
+    if missing: return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
     uid=form.get('user_id'); user=User.query.get(uid);
-    if user is None: return jsonify({"error": f"User {uid} not found"}), 404
+    if user is None: return jsonify({"error": f"User with id {uid} not found"}), 404
     try: price=float(form.get('price'))
-    except: return jsonify({"error": "Invalid price"}), 400
+    except ValueError: return jsonify({"error": "Invalid price format"}), 400
     try: beds=int(form.get('num_bed'))
-    except: return jsonify({"error": "Invalid num_bed"}), 400
+    except ValueError: return jsonify({"error": "Invalid num_bed format"}), 400
     try: baths=int(form.get('num_bath'))
-    except: return jsonify({"error": "Invalid num_bath"}), 400
+    except ValueError: return jsonify({"error": "Invalid num_bath format"}), 400
     dist=None; dist_str=form.get('distance')
     if dist_str:
         try: dist=float(dist_str)
-        except: return jsonify({"error": "Invalid distance"}), 400
+        except ValueError: return jsonify({"error": "Invalid distance format"}), 400
+
     uploads=_handle_image_upload();
-    if isinstance(uploads,tuple): return uploads
-    new_re=RealEstateAdvertisement(user_id=uid,city=form.get('city'),subcity=form.get('subcity'),title=form.get('title'),description=form.get('description'),phone_number=form.get('phone_number'),price=price,images=json.dumps(uploads) if uploads else None,type=form.get('type'),distance=dist,num_bed=beds,num_bath=baths)
+    if uploads is None: return jsonify({"error": "Failed to process or save uploaded images."}), 500
+
+    new_re=RealEstateAdvertisement(user_id=uid,city=form.get('city'),subcity=form.get('subcity'),title=form.get('title'),description=form.get('description'),phone_number=form.get('phone_number'),price=price,type=form.get('type'),distance=dist,num_bed=beds,num_bath=baths)
     return _save_entity(new_re, uploads)
 
 # === نقاط النهاية لجلب الإعلانات للمستخدم (فقط الموافق عليها) ===
-# ... ( /advertisements/all, /car_advertisements/all, /real_estate_advertisements/all تبقى كما هي مع فلتر is_approved=True ) ...
 @app.route('/advertisements/all', methods=['GET'])
 def get_all_advertisements():
     try: ads = Advertisement.query.filter_by(is_approved=True).all(); result = [ad.to_dict() for ad in ads]
-    except Exception as e: app.logger.error(f"Err fetch approved ads: {e}"); return jsonify({"error":"ISE"}),500
+    except Exception as e: app.logger.error(f"Err fetch approved ads: {e}"); return jsonify({"error":"Internal Server Error"}),500
     return jsonify(result), 200
 @app.route('/car_advertisements/all', methods=['GET'])
 def get_all_car_advertisements():
     try: ads = CarAdvertisement.query.filter_by(is_approved=True).all(); result = [ad.to_dict() for ad in ads]
-    except Exception as e: app.logger.error(f"Err fetch approved car ads: {e}"); return jsonify({"error":"ISE"}),500
+    except Exception as e: app.logger.error(f"Err fetch approved car ads: {e}"); return jsonify({"error":"Internal Server Error"}),500
     return jsonify(result), 200
 @app.route('/real_estate_advertisements/all', methods=['GET'])
 def get_all_real_estate_advertisements():
     try: ads = RealEstateAdvertisement.query.filter_by(is_approved=True).all(); result = [ad.to_dict() for ad in ads]
-    except Exception as e: app.logger.error(f"Err fetch approved re ads: {e}"); return jsonify({"error":"ISE"}),500
+    except Exception as e: app.logger.error(f"Err fetch approved re ads: {e}"); return jsonify({"error":"Internal Server Error"}),500
     return jsonify(result), 200
 
 # === نقاط نهاية جديدة خاصة بـ Admin ===
-# ... ( /admin/.../pending, /admin/.../approve تبقى كما هي ) ...
+# !! تذكير: يجب إضافة آلية تحقق من صلاحيات المشرف هنا !!
 @app.route('/admin/advertisements/pending', methods=['GET'])
 def admin_get_pending_advertisements(): # Add admin auth check
     try: ads = Advertisement.query.filter_by(is_approved=False).all(); result = [ad.to_dict() for ad in ads]
-    except Exception as e: app.logger.error(f"Err fetch pending ads: {e}"); return jsonify({"error":"ISE"}),500
+    except Exception as e: app.logger.error(f"Err fetch pending ads: {e}"); return jsonify({"error":"Internal Server Error"}),500
     return jsonify(result), 200
 @app.route('/admin/car_advertisements/pending', methods=['GET'])
 def admin_get_pending_car_advertisements(): # Add admin auth check
     try: ads = CarAdvertisement.query.filter_by(is_approved=False).all(); result = [ad.to_dict() for ad in ads]
-    except Exception as e: app.logger.error(f"Err fetch pending car ads: {e}"); return jsonify({"error":"ISE"}),500
+    except Exception as e: app.logger.error(f"Err fetch pending car ads: {e}"); return jsonify({"error":"Internal Server Error"}),500
     return jsonify(result), 200
 @app.route('/admin/real_estate_advertisements/pending', methods=['GET'])
 def admin_get_pending_real_estate_advertisements(): # Add admin auth check
     try: ads = RealEstateAdvertisement.query.filter_by(is_approved=False).all(); result = [ad.to_dict() for ad in ads]
-    except Exception as e: app.logger.error(f"Err fetch pending re ads: {e}"); return jsonify({"error":"ISE"}),500
+    except Exception as e: app.logger.error(f"Err fetch pending re ads: {e}"); return jsonify({"error":"Internal Server Error"}),500
     return jsonify(result), 200
 @app.route('/admin/advertisements/<int:ad_id>/approve', methods=['PUT'])
 def admin_approve_advertisement(ad_id): # Add admin auth check
     ad = Advertisement.query.get_or_404(ad_id);
-    if ad.is_approved: return jsonify({"message": "Already approved."}), 200
+    if ad.is_approved: return jsonify({"message": "Advertisement already approved."}), 200
     ad.is_approved = True;
-    try: db.session.commit(); return jsonify({"message": f"Ad {ad_id} approved.", "advertisement": ad.to_dict()}), 200
-    except Exception as e: db.session.rollback(); app.logger.error(f"Err approve ad {ad_id}: {e}"); return jsonify({"error":"ISE"}),500
+    try: db.session.commit(); return jsonify({"message": f"Advertisement {ad_id} approved.", "advertisement": ad.to_dict()}), 200
+    except Exception as e: db.session.rollback(); app.logger.error(f"Err approve ad {ad_id}: {e}"); return jsonify({"error":"Internal Server Error"}),500
 @app.route('/admin/car_advertisements/<int:ad_id>/approve', methods=['PUT'])
 def admin_approve_car_advertisement(ad_id): # Add admin auth check
     ad = CarAdvertisement.query.get_or_404(ad_id);
-    if ad.is_approved: return jsonify({"message": "Already approved."}), 200
+    if ad.is_approved: return jsonify({"message": "Car advertisement already approved."}), 200
     ad.is_approved = True;
     try: db.session.commit(); return jsonify({"message": f"Car Ad {ad_id} approved.", "advertisement": ad.to_dict()}), 200
-    except Exception as e: db.session.rollback(); app.logger.error(f"Err approve car ad {ad_id}: {e}"); return jsonify({"error":"ISE"}),500
+    except Exception as e: db.session.rollback(); app.logger.error(f"Err approve car ad {ad_id}: {e}"); return jsonify({"error":"Internal Server Error"}),500
 @app.route('/admin/real_estate_advertisements/<int:ad_id>/approve', methods=['PUT'])
 def admin_approve_real_estate_advertisement(ad_id): # Add admin auth check
     ad = RealEstateAdvertisement.query.get_or_404(ad_id);
-    if ad.is_approved: return jsonify({"message": "Already approved."}), 200
+    if ad.is_approved: return jsonify({"message": "Real estate advertisement already approved."}), 200
     ad.is_approved = True;
     try: db.session.commit(); return jsonify({"message": f"RE Ad {ad_id} approved.", "advertisement": ad.to_dict()}), 200
-    except Exception as e: db.session.rollback(); app.logger.error(f"Err approve re ad {ad_id}: {e}"); return jsonify({"error":"ISE"}),500
-
+    except Exception as e: db.session.rollback(); app.logger.error(f"Err approve re ad {ad_id}: {e}"); return jsonify({"error":"Internal Server Error"}),500
 
 # === نقاط نهاية جديدة خاصة بالمفضلة ===
-
-# --- إضافة إعلان عام للمفضلة ---
+# !! تذكير: يجب إضافة آلية تحقق من أن المستخدم هو صاحب الطلب !!
 @app.route('/user/<int:user_id>/favorites/advertisements/<int:ad_id>', methods=['POST'])
 def add_ad_to_favorites(user_id, ad_id):
     user = User.query.get_or_404(user_id)
     ad = Advertisement.query.get_or_404(ad_id)
-    # تحقق مما إذا كان الإعلان مضافاً بالفعل للمفضلة
+    # Check authorization: Is the logged-in user the same as user_id? (Needs implementation)
     if ad in user.favorite_ads:
-         return jsonify({"message": "Advertisement already in favorites."}), 200 # أو 409 Conflict
+         return jsonify({"message": "Advertisement already in favorites."}), 200
     user.favorite_ads.append(ad)
-    try:
-        db.session.commit()
-        return jsonify({"message": "Advertisement added to favorites successfully."}), 201
-    except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"Error adding ad {ad_id} to user {user_id} favorites: {e}")
-        return jsonify({"error": "Internal server error adding favorite"}), 500
+    try: db.session.commit(); return jsonify({"message": "Advertisement added to favorites successfully."}), 201
+    except Exception as e: db.session.rollback(); app.logger.error(f"Error adding ad {ad_id} to user {user_id} favorites: {e}"); return jsonify({"error": "Internal server error adding favorite"}), 500
 
-# --- إضافة إعلان سيارة للمفضلة ---
 @app.route('/user/<int:user_id>/favorites/cars/<int:ad_id>', methods=['POST'])
 def add_car_ad_to_favorites(user_id, ad_id):
     user = User.query.get_or_404(user_id)
     ad = CarAdvertisement.query.get_or_404(ad_id)
+    # Check authorization
     if ad in user.favorite_car_ads:
          return jsonify({"message": "Car advertisement already in favorites."}), 200
     user.favorite_car_ads.append(ad)
-    try:
-        db.session.commit()
-        return jsonify({"message": "Car advertisement added to favorites successfully."}), 201
-    except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"Error adding car ad {ad_id} to user {user_id} fav: {e}")
-        return jsonify({"error": "Internal server error adding favorite"}), 500
+    try: db.session.commit(); return jsonify({"message": "Car advertisement added to favorites successfully."}), 201
+    except Exception as e: db.session.rollback(); app.logger.error(f"Error adding car ad {ad_id} to user {user_id} fav: {e}"); return jsonify({"error": "Internal server error adding favorite"}), 500
 
-# --- إضافة إعلان عقار للمفضلة ---
 @app.route('/user/<int:user_id>/favorites/real_estate/<int:ad_id>', methods=['POST'])
 def add_real_estate_ad_to_favorites(user_id, ad_id):
     user = User.query.get_or_404(user_id)
     ad = RealEstateAdvertisement.query.get_or_404(ad_id)
+    # Check authorization
     if ad in user.favorite_real_estate_ads:
          return jsonify({"message": "Real estate advertisement already in favorites."}), 200
     user.favorite_real_estate_ads.append(ad)
-    try:
-        db.session.commit()
-        return jsonify({"message": "Real estate advertisement added to favorites successfully."}), 201
-    except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"Error adding re ad {ad_id} to user {user_id} fav: {e}")
-        return jsonify({"error": "Internal server error adding favorite"}), 500
+    try: db.session.commit(); return jsonify({"message": "Real estate advertisement added to favorites successfully."}), 201
+    except Exception as e: db.session.rollback(); app.logger.error(f"Error adding re ad {ad_id} to user {user_id} fav: {e}"); return jsonify({"error": "Internal server error adding favorite"}), 500
 
-# --- إزالة إعلان عام من المفضلة ---
 @app.route('/user/<int:user_id>/favorites/advertisements/<int:ad_id>', methods=['DELETE'])
 def remove_ad_from_favorites(user_id, ad_id):
     user = User.query.get_or_404(user_id)
     ad = Advertisement.query.get_or_404(ad_id)
+    # Check authorization
     if ad not in user.favorite_ads:
          return jsonify({"error": "Advertisement not found in favorites."}), 404
     user.favorite_ads.remove(ad)
-    try:
-        db.session.commit()
-        # 204 No Content مناسبة لعمليات الحذف الناجحة التي لا ترجع محتوى
-        return '', 204
-        # أو يمكنك إرجاع رسالة:
-        # return jsonify({"message": "Advertisement removed from favorites."}), 200
-    except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"Error removing ad {ad_id} from user {user_id} favorites: {e}")
-        return jsonify({"error": "Internal server error removing favorite"}), 500
+    try: db.session.commit(); return '', 204
+    except Exception as e: db.session.rollback(); app.logger.error(f"Error removing ad {ad_id} from user {user_id} favorites: {e}"); return jsonify({"error": "Internal server error removing favorite"}), 500
 
-# --- إزالة إعلان سيارة من المفضلة ---
 @app.route('/user/<int:user_id>/favorites/cars/<int:ad_id>', methods=['DELETE'])
 def remove_car_ad_from_favorites(user_id, ad_id):
     user = User.query.get_or_404(user_id)
     ad = CarAdvertisement.query.get_or_404(ad_id)
+    # Check authorization
     if ad not in user.favorite_car_ads:
          return jsonify({"error": "Car advertisement not found in favorites."}), 404
     user.favorite_car_ads.remove(ad)
-    try:
-        db.session.commit()
-        return '', 204
-    except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"Error removing car ad {ad_id} from user {user_id} fav: {e}")
-        return jsonify({"error": "Internal server error removing favorite"}), 500
+    try: db.session.commit(); return '', 204
+    except Exception as e: db.session.rollback(); app.logger.error(f"Error removing car ad {ad_id} from user {user_id} fav: {e}"); return jsonify({"error": "Internal server error removing favorite"}), 500
 
-# --- إزالة إعلان عقار من المفضلة ---
 @app.route('/user/<int:user_id>/favorites/real_estate/<int:ad_id>', methods=['DELETE'])
 def remove_real_estate_ad_from_favorites(user_id, ad_id):
     user = User.query.get_or_404(user_id)
     ad = RealEstateAdvertisement.query.get_or_404(ad_id)
+    # Check authorization
     if ad not in user.favorite_real_estate_ads:
          return jsonify({"error": "Real estate advertisement not found in favorites."}), 404
     user.favorite_real_estate_ads.remove(ad)
-    try:
-        db.session.commit()
-        return '', 204
-    except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"Error removing re ad {ad_id} from user {user_id} fav: {e}")
-        return jsonify({"error": "Internal server error removing favorite"}), 500
+    try: db.session.commit(); return '', 204
+    except Exception as e: db.session.rollback(); app.logger.error(f"Error removing re ad {ad_id} from user {user_id} fav: {e}"); return jsonify({"error": "Internal server error removing favorite"}), 500
 
-
-# --- جلب كل مفضلات المستخدم ---
 @app.route('/user/<int:user_id>/favorites', methods=['GET'])
 def get_user_favorites(user_id):
     user = User.query.get_or_404(user_id)
+    # Check authorization
     try:
-        # جلب كل الإعلانات المفضلة وتحويلها
-        # لاحظ استخدام .all() هنا لأننا نريد النتائج الفعلية الآن
-        fav_ads = [ad.to_dict() for ad in user.favorite_ads.filter(Advertisement.is_approved==True).all()] # Only approved
-        fav_car_ads = [ad.to_dict() for ad in user.favorite_car_ads.filter(CarAdvertisement.is_approved==True).all()] # Only approved
-        fav_re_ads = [ad.to_dict() for ad in user.favorite_real_estate_ads.filter(RealEstateAdvertisement.is_approved==True).all()] # Only approved
-
-        # تجميع النتائج في قاموس واحد
-        all_favorites = {
-            "advertisements": fav_ads,
-            "car_advertisements": fav_car_ads,
-            "real_estate_advertisements": fav_re_ads
-        }
+        fav_ads = [ad.to_dict() for ad in user.favorite_ads.filter(Advertisement.is_approved==True).all()]
+        fav_car_ads = [ad.to_dict() for ad in user.favorite_car_ads.filter(CarAdvertisement.is_approved==True).all()]
+        fav_re_ads = [ad.to_dict() for ad in user.favorite_real_estate_ads.filter(RealEstateAdvertisement.is_approved==True).all()]
+        all_favorites = { "advertisements": fav_ads, "car_advertisements": fav_car_ads, "real_estate_advertisements": fav_re_ads }
         return jsonify(all_favorites), 200
-    except Exception as e:
-        app.logger.error(f"Error fetching favorites for user {user_id}: {e}")
-        return jsonify({"error": "Internal server error fetching favorites"}), 500
+    except Exception as e: app.logger.error(f"Error fetching favorites for user {user_id}: {e}"); return jsonify({"error": "Internal server error fetching favorites"}), 500
 
+
+# --- التشغيل المحلي (للاختبار فقط) ---
 if __name__ == '__main__':
-    with app.app_context():
-        # تأكد من أن هذا الجزء يتم تنفيذه دائمًا عند البدء للتحقق وإنشاء الجداول
-        db.create_all()
-        print(f"Database tables checked/created at {db_path}.") # طباعة المسار للتأكيد
-    app.run(debug=False, host='0.0.0.0', port=5000) # عادةً debug=False على السيرفر
+    # لا حاجة لـ db.create_all() هنا، فقد تم تشغيله أعلاه
+    print("Starting Flask development server (for local testing)...")
+    # استخدم debug=True فقط أثناء التطوير المحلي، وليس في الإنتاج
+    # استخدم المنفذ 5000 أو أي منفذ آخر مناسب للاختبار المحلي
+    app.run(debug=True, host='0.0.0.0', port=5000)
+
+# --- END OF FILE app.py ---
