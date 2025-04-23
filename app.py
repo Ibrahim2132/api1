@@ -7,17 +7,24 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
-# --- إعداد التطبيق وقاعدة البيانات ---
-basedir = os.path.abspath(os.path.dirname(__file__))
-UPLOAD_FOLDER = os.path.join(basedir, 'uploads')
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+basedir = os.path.abspath(os.path.dirname(__file__)) # لا يزال مفيدًا لحسابات أخرى
+
+# --- استخدم مسار القرص الدائم ---
+persistent_data_dir = '/data' # المسار الذي حددته كنقطة تركيب للقرص
+db_path = os.path.join(persistent_data_dir, 'database.db') # ضع قاعدة البيانات داخل القرص
+UPLOAD_FOLDER = os.path.join(persistent_data_dir, 'uploads') # ضع مجلد الرفع داخل القرص أيضًا
+
+os.makedirs(UPLOAD_FOLDER, exist_ok=True) # تأكد من وجود مجلد الرفع
+# --- ---
+
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'database.db')
+# --- استخدم المسار الجديد لقاعدة البيانات ---
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + db_path
+# --- ---
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 db = SQLAlchemy(app)
-
 
 # --- جداول الربط للمفضلة ---
 
@@ -458,10 +465,9 @@ def get_user_favorites(user_id):
         app.logger.error(f"Error fetching favorites for user {user_id}: {e}")
         return jsonify({"error": "Internal server error fetching favorites"}), 500
 
-
-# --- تشغيل السيرفر ---
 if __name__ == '__main__':
     with app.app_context():
-        db.create_all() # سينشئ جداول الربط للمفضلة أيضًا
-        print("Database tables checked/created.")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+        # تأكد من أن هذا الجزء يتم تنفيذه دائمًا عند البدء للتحقق وإنشاء الجداول
+        db.create_all()
+        print(f"Database tables checked/created at {db_path}.") # طباعة المسار للتأكيد
+    app.run(debug=False, host='0.0.0.0', port=5000) # عادةً debug=False على السيرفر
