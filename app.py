@@ -10,7 +10,7 @@ from werkzeug.utils import secure_filename
 basedir = os.path.abspath(os.path.dirname(__file__)) # لا يزال مفيدًا لحسابات أخرى
 
 # --- استخدم مسار القرص الدائم ---
-persistent_data_dir = '/data' # المسار الذي حددته كنقطة تركيب للقرص
+persistent_data_dir = '/tmp' # المسار الذي حددته كنقطة تركيب للقرص
 db_path = os.path.join(persistent_data_dir, 'database.db') # ضع قاعدة البيانات داخل القرص
 UPLOAD_FOLDER = os.path.join(persistent_data_dir, 'uploads') # ضع مجلد الرفع داخل القرص أيضًا
 
