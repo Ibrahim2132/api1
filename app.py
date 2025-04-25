@@ -9,7 +9,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
 # --- تحديد المسارات ---
-# هام جداً: تأكد أن هذا هو "Mount Path" الصحيح للقرص الدائم في Render
+
 persistent_data_dir = '/tmp'
 db_path = os.path.join(persistent_data_dir, 'database.db')
 UPLOAD_FOLDER = os.path.join(persistent_data_dir, 'uploads')
@@ -75,6 +75,35 @@ class User(db.Model):
     def check_password(self, password): return check_password_hash(self.password_hash, password)
     def to_dict(self): return {"id": self.id, "name": self.name, "phone_number": self.phone_number}
     def __repr__(self): return f'<User {self.name} - {self.phone_number}>'
+
+# --- تعريف موديل المستخدم (User Model) ---
+class User1(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(80), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False, index=True) # البريد الإلكتروني فريد ومطلوب
+    phone_number = db.Column(db.String(20), nullable=False) # رقم الهاتف مطلوب
+    password_hash = db.Column(db.String(128), nullable=False) # تخزين هاش كلمة المرور
+
+    def set_password(self, password):
+        """إنشاء هاش لكلمة المرور."""
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        """التحقق من تطابق كلمة المرور المدخلة مع الهاش المخزن."""
+        return check_password_hash(self.password_hash, password)
+
+    def to_dict(self):
+        """إرجاع بيانات المستخدم كقاموس (بدون كلمة المرور)."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "email": self.email,
+            "phone_number": self.phone_number
+        }
+
+    def __repr__(self):
+        """تمثيل نصي للمستخدم (مفيد للتصحيح)."""
+        return f'<User {self.name} - {self.email}>'
 
 # --- تعريف موديل الإعلان العام (Advertisement Model) ---
 class Advertisement(db.Model):
@@ -445,6 +474,77 @@ def get_user_favorites(user_id):
         return jsonify(all_favorites), 200
     except Exception as e: app.logger.error(f"Error fetching favorites for user {user_id}: {e}"); return jsonify({"error": "Internal server error fetching favorites"}), 500
 
+
+@app.route('/register1', methods=['POST'])
+def register1():
+    """نقطة نهاية لإنشاء مستخدم جديد."""
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400 # Bad Request
+
+    data = request.get_json()
+    name = data.get('name')
+    email = data.get('email')
+    password = data.get('password')
+    phone_number = data.get('phone_number')
+
+    # التحقق من وجود جميع الحقول المطلوبة
+    missing_fields = []
+    if not name: missing_fields.append('name')
+    if not email: missing_fields.append('email')
+    if not password: missing_fields.append('password')
+    if not phone_number: missing_fields.append('phone_number')
+    if missing_fields:
+        return jsonify({"error": f"Missing required fields: {', '.join(missing_fields)}"}), 400
+
+    # التحقق من أن البريد الإلكتروني غير مسجل مسبقًا
+    if User1.query.filter_by(email=email).first():
+        return jsonify({"error": "Email address already registered"}), 409 # Conflict
+
+    # إنشاء مستخدم جديد
+    new_user = User1(name=name, email=email, phone_number=phone_number)
+    new_user.set_password(password) # تعيين كلمة المرور المشفرة
+
+    try:
+        db.session.add(new_user)
+        db.session.commit()
+        # إرجاع بيانات المستخدم الجديد (باستثناء كلمة المرور)
+        return jsonify({
+            "message": "User registered successfully!",
+            "user": new_user.to_dict()
+        }), 201 # Created
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Registration Error: {e}")
+        return jsonify({"error": "Internal Server Error during registration"}), 500 # Internal Server Error
+
+
+@app.route('/login1', methods=['POST'])
+def login1():
+    """نقطة نهاية لتسجيل دخول المستخدم."""
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400
+
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
+
+    # التحقق من وجود الحقول المطلوبة
+    if not email or not password:
+        return jsonify({"error": "Missing email or password"}), 400
+
+    # البحث عن المستخدم بواسطة البريد الإلكتروني
+    user = User1.query.filter_by(email=email).first()
+
+    # التحقق من وجود المستخدم وصحة كلمة المرور
+    if user is None or not user.check_password(password):
+        # رسالة خطأ عامة لأسباب أمنية
+        return jsonify({"error": "Invalid email or password"}), 401 # Unauthorized
+
+    # تسجيل الدخول ناجح، إرجاع بيانات المستخدم
+    return jsonify({
+        "message": "Login successful!",
+        "user": user.to_dict()
+    }), 200 # OK
 
 # --- التشغيل المحلي (للاختبار فقط) ---
 if __name__ == '__main__':
