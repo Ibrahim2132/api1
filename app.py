@@ -1,4 +1,4 @@
-# --- START OF FILE app.py ---
+# --- START OF MODIFIED FILE app.py ---
 import os
 import json
 import sys # استيراد sys للخروج عند الخطأ إذا لزم الأمر
@@ -13,7 +13,7 @@ from werkzeug.utils import secure_filename
 # --- تحديد المسارات ---
 
 persistent_data_dir = '/tmp'
-db_path = os.path.join(persistent_data_dir, 'databases.db')
+db_path = os.path.join(persistent_data_dir, 'databases1.db')
 UPLOAD_FOLDER = os.path.join(persistent_data_dir, 'uploads')
 db_dir = os.path.dirname(db_path) # مجلد قاعدة البيانات
 
@@ -51,6 +51,9 @@ class User(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False, index=True) # البريد الإلكتروني فريد ومطلوب
     phone_number = db.Column(db.String(20), nullable=False) # رقم الهاتف مطلوب
     password_hash = db.Column(db.String(128), nullable=False) # تخزين هاش كلمة المرور
+    # --- START: إضافة حقل الاهتمامات ---
+    interests = db.Column(db.Text, nullable=True) # الاهتمامات كقائمة نصية (JSON) (اختياري)
+    # --- END: إضافة حقل الاهتمامات ---
 
     def set_password(self, password):
         """إنشاء هاش لكلمة المرور."""
@@ -60,13 +63,41 @@ class User(db.Model):
         """التحقق من تطابق كلمة المرور المدخلة مع الهاش المخزن."""
         return check_password_hash(self.password_hash, password)
 
+    # --- START: إضافة دوال للاهتمامات ---
+    def set_interests(self, interests_list):
+        """تحويل قائمة الاهتمامات إلى نص JSON لتخزينها."""
+        if interests_list and isinstance(interests_list, list):
+            # التأكد من أن كل عنصر في القائمة هو نص
+            if all(isinstance(item, str) for item in interests_list):
+                self.interests = json.dumps(interests_list)
+            else:
+                # يمكنك رفع خطأ هنا أو تسجيل تحذير
+                app.logger.warning(f"User {self.id}: Interests list contains non-string elements. Setting interests to null.")
+                self.interests = None # أو json.dumps([])
+        else:
+            self.interests = None # أو json.dumps([])
+
+    def get_interests(self):
+        """استرجاع قائمة الاهتمامات من نص JSON."""
+        if self.interests:
+            try:
+                return json.loads(self.interests)
+            except json.JSONDecodeError:
+                app.logger.error(f"User {self.id}: Failed to decode interests JSON: {self.interests}")
+                return [] # إرجاع قائمة فارغة في حالة الخطأ
+        return []
+    # --- END: إضافة دوال للاهتمامات ---
+
     def to_dict(self):
         """إرجاع بيانات المستخدم كقاموس (بدون كلمة المرور)."""
         return {
             "id": self.id,
             "name": self.name,
             "email": self.email,
-            "phone_number": self.phone_number
+            "phone_number": self.phone_number,
+            # --- START: إضافة الاهتمامات إلى القاموس ---
+            "interests": self.get_interests() # استرجاع القائمة الفعلية
+            # --- END: إضافة الاهتمامات إلى القاموس ---
         }
 
     def __repr__(self):
@@ -79,7 +110,9 @@ class Advertisement(db.Model):
     title = db.Column(db.String(120), nullable=False) # عنوان الإعلان (إلزامي)
     description = db.Column(db.Text, nullable=True) # وصف الإعلان (اختياري)
     link = db.Column(db.Text, nullable=False) # رابط الإعلان (إلزامي)
+    # --- START: إضافة حقل الاهتمامات ---
     interests = db.Column(db.Text, nullable=True) # الاهتمامات كقائمة نصية (JSON) (اختياري)
+    # --- END: إضافة حقل الاهتمامات ---
     number_of_clicks = db.Column(db.Integer, nullable=False, default=0) # عدد النقرات (يبدأ بـ 0)
     coin_per_click = db.Column(db.Integer, nullable=False) # تكلفة النقرة بالعملات (إلزامي)
     category = db.Column(db.String(80), nullable=True, index=True) # الفئة (اختياري)
@@ -87,13 +120,21 @@ class Advertisement(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow) # تاريخ الإنشاء
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow) # تاريخ التحديث
     is_active = db.Column(db.Boolean, nullable=False, default=True) # هل الإعلان نشط؟
-    is_approved = db.Column(db.Boolean, nullable=False, default=False) # هل تمت الموافقة على الإعلان؟ (افتراضي لا)
+    # --- START: إضافة حقل الموافقة ---
+    is_approved = db.Column(db.Boolean, nullable=False, default=False, index=True) # هل تمت الموافقة على الإعلان؟ (افتراضي لا) - تمت إضافة index
+    # --- END: إضافة حقل الموافقة ---
     # images = db.Column(db.Text, nullable=True) # حقل للصور إذا أردت إضافتها لاحقًا (مثل _save_entity)
 
+    # --- START: إضافة دوال للاهتمامات ---
     def set_interests(self, interests_list):
         """تحويل قائمة الاهتمامات إلى نص JSON لتخزينها."""
         if interests_list and isinstance(interests_list, list):
-            self.interests = json.dumps(interests_list)
+             # التأكد من أن كل عنصر في القائمة هو نص
+            if all(isinstance(item, str) for item in interests_list):
+                self.interests = json.dumps(interests_list)
+            else:
+                app.logger.warning(f"Ad {self.id}: Interests list contains non-string elements. Setting interests to null.")
+                self.interests = None
         else:
             self.interests = None # أو json.dumps([])
 
@@ -103,8 +144,10 @@ class Advertisement(db.Model):
             try:
                 return json.loads(self.interests)
             except json.JSONDecodeError:
+                app.logger.error(f"Ad {self.id}: Failed to decode interests JSON: {self.interests}")
                 return [] # إرجاع قائمة فارغة في حالة الخطأ
         return []
+    # --- END: إضافة دوال للاهتمامات ---
 
     def to_dict(self):
         """إرجاع بيانات الإعلان كقاموس."""
@@ -114,7 +157,9 @@ class Advertisement(db.Model):
             "title": self.title,
             "description": self.description,
             "link": self.link,
+            # --- START: تعديل لاستخدام الدالة ---
             "interests": self.get_interests(), # استرجاع القائمة الفعلية
+            # --- END: تعديل لاستخدام الدالة ---
             "number_of_clicks": self.number_of_clicks,
             "coin_per_click": self.coin_per_click,
             "category": self.category,
@@ -122,7 +167,9 @@ class Advertisement(db.Model):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "is_active": self.is_active,
+            # --- START: إضافة حقل الموافقة إلى القاموس ---
             "is_approved": self.is_approved,
+            # --- END: إضافة حقل الموافقة إلى القاموس ---
             # "images": json.loads(self.images) if self.images else [] # إذا أضفت الصور
         }
 
@@ -152,6 +199,7 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # ... (بقية الدوال المساعدة: _handle_image_upload, _save_entity) ...
+# هذه الدوال غير مستخدمة حاليًا في الكود المنقح ولكنها قد تكون مفيدة لاحقًا
 def _handle_image_upload():
     uploaded_filenames = []
     if 'images' in request.files:
@@ -192,7 +240,10 @@ def _save_entity(entity, uploaded_filenames):
         entity_type = entity.__class__.__name__.lower().replace("advertisement", "")
         if not entity_type or entity_type == "advertisement": entity_type = "advertisement" # التعامل مع الحالة الأساسية
         entity_dict = entity.to_dict() # احصل على القاموس بعد الـ commit (للحصول على الـ ID)
-        return jsonify({"message": f"{entity_type.replace('_',' ').capitalize()} submitted for approval!", "advertisement": entity_dict}), 201
+        # --- تعديل الرسالة لتعكس حالة الموافقة الأولية ---
+        # return jsonify({"message": f"{entity_type.replace('_',' ').capitalize()} submitted for approval!", "advertisement": entity_dict}), 201
+        return jsonify({"message": f"{entity_type.replace('_',' ').capitalize()} created successfully!", "advertisement": entity_dict}), 201
+
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Err creating {entity.__class__.__name__} (User: {getattr(entity, 'user_id', 'N/A')}): {e}", exc_info=True) # إضافة تفاصيل الخطأ
@@ -220,6 +271,10 @@ def register():
     email = data.get('email')
     password = data.get('password')
     phone_number = data.get('phone_number')
+    # --- START: إضافة استخراج الاهتمامات ---
+    interests_list = data.get('interests') # اختياري
+    # --- END: إضافة استخراج الاهتمامات ---
+
 
     # التحقق من وجود جميع الحقول المطلوبة
     missing_fields = []
@@ -234,9 +289,19 @@ def register():
     if User.query.filter_by(email=email).first():
         return jsonify({"error": "Email address already registered"}), 409 # Conflict
 
+    # --- START: التحقق من نوع الاهتمامات ---
+    if interests_list is not None and not isinstance(interests_list, list):
+        return jsonify({"error": "Field 'interests' must be a list of strings"}), 400
+    if interests_list and not all(isinstance(item, str) for item in interests_list):
+         return jsonify({"error": "All items in 'interests' list must be strings"}), 400
+    # --- END: التحقق من نوع الاهتمامات ---
+
     # إنشاء مستخدم جديد
     new_user = User(name=name, email=email, phone_number=phone_number)
     new_user.set_password(password) # تعيين كلمة المرور المشفرة
+    # --- START: تعيين الاهتمامات للمستخدم الجديد ---
+    new_user.set_interests(interests_list) # تعيين الاهتمامات باستخدام الدالة المساعدة
+    # --- END: تعيين الاهتمامات للمستخدم الجديد ---
 
     try:
         db.session.add(new_user)
@@ -244,11 +309,11 @@ def register():
         # إرجاع بيانات المستخدم الجديد (باستثناء كلمة المرور)
         return jsonify({
             "message": "User registered successfully!",
-            "user": new_user.to_dict()
+            "user": new_user.to_dict() # سيحتوي الآن على الاهتمامات
         }), 201 # Created
     except Exception as e:
         db.session.rollback()
-        app.logger.error(f"Registration Error: {e}")
+        app.logger.error(f"Registration Error: {e}", exc_info=True) # إضافة تفاصيل الخطأ
         return jsonify({"error": "Internal Server Error during registration"}), 500 # Internal Server Error
 
 
@@ -277,18 +342,68 @@ def login():
     # تسجيل الدخول ناجح، إرجاع بيانات المستخدم
     return jsonify({
         "message": "Login successful!",
-        "user": user.to_dict()
+        "user": user.to_dict() # سيحتوي الآن على الاهتمامات
     }), 200 # OK
+
+# --- START: نقطة نهاية لجلب بيانات المستخدم بالـ ID ---
+@app.route('/users/<int:user_id>', methods=['GET'])
+def get_user_by_id(user_id):
+    """نقطة نهاية لجلب بيانات مستخدم معين بواسطة ID."""
+    user = User.query.get(user_id) # استخدام .get() للبحث بالـ Primary Key
+
+    if user is None:
+        return jsonify({"error": f"User with ID {user_id} not found"}), 404 # Not Found
+
+    return jsonify(user.to_dict()), 200 # OK
+# --- END: نقطة نهاية لجلب بيانات المستخدم بالـ ID ---
+
+# --- START: نقطة نهاية لتحديث اهتمامات المستخدم ---
+@app.route('/users/<int:user_id>/interests', methods=['PUT'])
+def update_user_interests(user_id):
+    """نقطة نهاية لتحديث قائمة اهتمامات المستخدم."""
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400
+
+    user = User.query.get(user_id)
+    if user is None:
+        return jsonify({"error": f"User with ID {user_id} not found"}), 404
+
+    data = request.get_json()
+    interests_list = data.get('interests')
+
+    # التحقق من أن الاهتمامات مرسلة وهي قائمة
+    if interests_list is None:
+        return jsonify({"error": "Missing 'interests' field in request body"}), 400
+    if not isinstance(interests_list, list):
+        return jsonify({"error": "Field 'interests' must be a list of strings"}), 400
+    if not all(isinstance(item, str) for item in interests_list):
+        return jsonify({"error": "All items in 'interests' list must be strings"}), 400
+
+    try:
+        user.set_interests(interests_list) # استخدام الدالة المساعدة للتحديث
+        db.session.commit()
+        return jsonify({
+            "message": f"User {user_id} interests updated successfully",
+            "user": user.to_dict()
+        }), 200 # OK
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error updating interests for user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error updating interests"}), 500
+# --- END: نقطة نهاية لتحديث اهتمامات المستخدم ---
+
+
 @app.route('/add_advertisement', methods=['POST'])
 def add_advertisement():
-    """نقطة نهاية لإنشاء إعلان جديد."""
+    """نقطة نهاية لإنشاء إعلان جديد (سيحتاج لموافقة)."""
+    # ملاحظة: يجب استخدام المصادقة لتحديد user_id بشكل آمن
     if not request.is_json:
         return jsonify({"error": "Request must be JSON"}), 400
 
     data = request.get_json()
 
     # --- استخراج البيانات ---
-    user_id = data.get('user_id') # هام: هذا يجب أن يأتي من المستخدم المسجل دخوله (مثلاً عبر توكن)
+    user_id = data.get('user_id') # هام: يجب التحقق من أن هذا المستخدم موجود وله الصلاحية
     title = data.get('title')
     link = data.get('link')
     coin_per_click = data.get('coin_per_click')
@@ -299,18 +414,15 @@ def add_advertisement():
 
     # --- التحقق من الحقول الإلزامية ---
     missing_fields = []
-    if user_id is None: missing_fields.append('user_id') # مؤقتًا - يجب الحصول عليه من المصادقة
+    if user_id is None: missing_fields.append('user_id')
     if not title: missing_fields.append('title')
     if not link: missing_fields.append('link')
-    if coin_per_click is None: missing_fields.append('coin_per_click') # يجب أن يكون رقمًا
+    if coin_per_click is None: missing_fields.append('coin_per_click')
     if missing_fields:
         return jsonify({"error": f"Missing required fields: {', '.join(missing_fields)}"}), 400
 
     # --- التحقق من صحة البيانات ---
-    # 1. التحقق من وجود المستخدم
-    #    تنبيه أمني: في تطبيق حقيقي، يجب ألا يتم إرسال user_id في الطلب.
-    #    يجب تحديده من خلال آلية مصادقة (مثل JWT أو جلسة).
-    #    سنقوم بالتحقق منه هنا كمثال فقط.
+    # 1. التحقق من وجود المستخدم (مهم!)
     user = User.query.get(user_id)
     if not user:
         return jsonify({"error": f"User with ID {user_id} not found"}), 404 # Not Found
@@ -318,6 +430,8 @@ def add_advertisement():
     # 2. التحقق من نوع الاهتمامات (إذا تم توفيرها)
     if interests_list is not None and not isinstance(interests_list, list):
         return jsonify({"error": "Field 'interests' must be a list of strings"}), 400
+    if interests_list and not all(isinstance(item, str) for item in interests_list):
+         return jsonify({"error": "All items in 'interests' list must be strings"}), 400
 
     # 3. التحقق من نوع coin_per_click
     if not isinstance(coin_per_click, int) or coin_per_click < 0:
@@ -325,14 +439,15 @@ def add_advertisement():
 
     # --- إنشاء وحفظ الإعلان ---
     new_ad = Advertisement(
-        user_id=user_id, # يجب استبداله بالمستخدم المصادق عليه
+        user_id=user_id,
         title=title,
         description=description,
         link=link,
         coin_per_click=coin_per_click,
         category=category,
         subcategory=subcategory
-        # number_of_clicks, is_active, is_approved لها قيم افتراضية
+        # is_approved سيكون False افتراضيًا
+        # is_active سيكون True افتراضيًا
     )
     # تعيين الاهتمامات باستخدام الدالة المساعدة
     new_ad.set_interests(interests_list)
@@ -340,9 +455,9 @@ def add_advertisement():
     try:
         db.session.add(new_ad)
         db.session.commit()
-        # إرجاع بيانات الإعلان الجديد
+        # إرجاع بيانات الإعلان الجديد (بما في ذلك is_approved=False)
         return jsonify({
-            "message": "Advertisement created successfully!",
+            "message": "Advertisement created successfully and submitted for approval!",
             "advertisement": new_ad.to_dict()
         }), 201 # Created
     except Exception as e:
@@ -350,12 +465,79 @@ def add_advertisement():
         app.logger.error(f"Error creating advertisement for user {user_id}: {e}", exc_info=True)
         return jsonify({"error": "Internal Server Error creating advertisement"}), 500
 
+# --- START: نقطة نهاية للموافقة على إعلان (للأدمن) ---
+# ملاحظة هامة: هذه النقطة يجب أن تكون محمية! يجب التأكد أن المستخدم الذي يستدعيها هو أدمن.
+# طرق الحماية الشائعة تتضمن: التحقق من توكن خاص بالأدمن، التحقق من دور المستخدم، إلخ.
+@app.route('/admin/advertisements/<int:ad_id>/approve', methods=['PUT'])
+def approve_advertisement(ad_id):
+    """نقطة نهاية للموافقة على إعلان معين (تغيير is_approved إلى True)."""
+    advertisement = Advertisement.query.get(ad_id)
+
+    if advertisement is None:
+        return jsonify({"error": f"Advertisement with ID {ad_id} not found"}), 404
+
+    if advertisement.is_approved:
+        return jsonify({
+            "message": f"Advertisement {ad_id} is already approved.",
+            "advertisement": advertisement.to_dict()
+        }), 200 # OK (أو 304 Not Modified إذا أردت)
+
+    try:
+        advertisement.is_approved = True
+        advertisement.updated_at = datetime.utcnow() # تحديث وقت التعديل
+        db.session.commit()
+        return jsonify({
+            "message": f"Advertisement {ad_id} approved successfully.",
+            "advertisement": advertisement.to_dict()
+        }), 200 # OK
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error approving advertisement {ad_id}: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error approving advertisement"}), 500
+# --- END: نقطة نهاية للموافقة على إعلان ---
+
+# --- START: نقطة نهاية لجلب جميع الإعلانات (بما في ذلك غير الموافق عليها) ---
+@app.route('/advertisements', methods=['GET'])
+def get_all_advertisements():
+    """نقطة نهاية لجلب جميع الإعلانات (مناسب للأدمن)."""
+    # يمكن إضافة pagination هنا في تطبيق حقيقي للتعامل مع عدد كبير من الإعلانات
+    # page = request.args.get('page', 1, type=int)
+    # per_page = request.args.get('per_page', 10, type=int)
+    # ads = Advertisement.query.paginate(page=page, per_page=per_page, error_out=False)
+    # results = [ad.to_dict() for ad in ads.items]
+    # return jsonify({
+    #     "advertisements": results,
+    #     "total": ads.total,
+    #     "pages": ads.pages,
+    #     "current_page": page
+    # })
+
+    all_ads = Advertisement.query.order_by(Advertisement.created_at.desc()).all()
+    results = [ad.to_dict() for ad in all_ads]
+    return jsonify(results), 200
+# --- END: نقطة نهاية لجلب جميع الإعلانات ---
+
+# --- START: نقطة نهاية لجلب الإعلانات الموافق عليها فقط ---
+@app.route('/advertisements/approved', methods=['GET'])
+def get_approved_advertisements():
+    """نقطة نهاية لجلب الإعلانات التي تمت الموافقة عليها فقط."""
+    # يمكن إضافة pagination هنا أيضًا
+    approved_ads = Advertisement.query.filter_by(is_approved=True, is_active=True)\
+                                      .order_by(Advertisement.created_at.desc()).all()
+                                      # أضفنا is_active=True هنا، قد ترغب بعرض الموافق عليها حتى لو غير نشطة للأدمن
+                                      # لكن للمستخدمين العاديين، عادة ما تعرض الموافق عليها والنشطة فقط.
+    results = [ad.to_dict() for ad in approved_ads]
+    return jsonify(results), 200
+# --- END: نقطة نهاية لجلب الإعلانات الموافق عليها فقط ---
+
+
 # --- التشغيل المحلي (للاختبار فقط) ---
 if __name__ == '__main__':
     # لا حاجة لـ db.create_all() هنا، فقد تم تشغيله أعلاه
     print("Starting Flask development server (for local testing)...")
     # استخدم debug=True فقط أثناء التطوير المحلي، وليس في الإنتاج
     # استخدم المنفذ 5000 أو أي منفذ آخر مناسب للاختبار المحلي
+    # تغيير host='0.0.0.0' لجعله متاحًا على الشبكة المحلية (إذا لزم الأمر)
     app.run(debug=True, host='0.0.0.0', port=5000)
 
-# --- END OF FILE app.py ---
+# --- END OF MODIFIED FILE app.py ---
