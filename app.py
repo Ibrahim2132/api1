@@ -833,6 +833,103 @@ def analyze_share_status():
         app.logger.error(f"Error calling Gemini API for share analysis {img_hash}: {e}", exc_info=True)
         return jsonify({"error": f"An error occurred during share analysis: {str(e)}"}), 500
 
+@app.route('/users/<int:user_id>', methods=['PATCH'])
+def update_user_data(user_id):
+    """تحديث بيانات مستخدم معين (الاسم، الهاتف، الاهتمامات، إضافة/طرح كوينز)."""
+    user = User.query.get(user_id)
+    if user is None:
+        return jsonify({"error": f"User with ID {user_id} not found"}), 404
+
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400
+
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body cannot be empty for update"}), 400
+
+    updated_fields = [] # لتتبع الحقول التي تم تحديثها
+
+    # تحديث الاسم
+    if 'name' in data:
+        new_name = data['name']
+        if isinstance(new_name, str) and new_name.strip():
+            user.name = new_name.strip()
+            updated_fields.append('name')
+            app.logger.info(f"User {user_id}: Name updated.")
+        else:
+            return jsonify({"error": "Invalid value for 'name'. Must be a non-empty string."}), 400
+
+    # تحديث رقم الهاتف
+    if 'phone_number' in data:
+        new_phone = data['phone_number']
+        # يمكنك إضافة تحقق أكثر تفصيلاً من صيغة الرقم هنا
+        if isinstance(new_phone, str) and new_phone.strip():
+            user.phone_number = new_phone.strip()
+            updated_fields.append('phone_number')
+            app.logger.info(f"User {user_id}: Phone number updated.")
+        else:
+            return jsonify({"error": "Invalid value for 'phone_number'. Must be a non-empty string."}), 400
+
+    # تحديث الاهتمامات
+    if 'interests' in data:
+        interests_list = data['interests']
+        if interests_list is None or (isinstance(interests_list, list) and all(isinstance(i, str) for i in interests_list)):
+            user.set_interests(interests_list) # الدالة تعالج None أو القائمة الصحيحة
+            updated_fields.append('interests')
+            app.logger.info(f"User {user_id}: Interests updated.")
+        else:
+             return jsonify({"error": "'interests' must be a list of strings or null."}), 400
+
+    # تحديث الكوينز (إضافة/طرح)
+    coins_changed = False
+    if 'add_coins' in data:
+        try:
+            amount_to_add = int(data['add_coins'])
+            if amount_to_add < 0:
+                 return jsonify({"error": "'add_coins' must be a non-negative integer."}), 400
+            user.coins += amount_to_add
+            coins_changed = True
+            app.logger.info(f"User {user_id}: Added {amount_to_add} coins. New balance: {user.coins}")
+        except (ValueError, TypeError):
+            return jsonify({"error": "'add_coins' must be an integer."}), 400
+
+    if 'subtract_coins' in data:
+        try:
+            amount_to_subtract = int(data['subtract_coins'])
+            if amount_to_subtract < 0:
+                 return jsonify({"error": "'subtract_coins' must be a non-negative integer."}), 400
+            if user.coins >= amount_to_subtract:
+                user.coins -= amount_to_subtract
+            else:
+                # منع الرصيد السالب، يمكنك إرجاع خطأ أو تصفير الرصيد
+                app.logger.warning(f"User {user_id}: Tried to subtract {amount_to_subtract} coins, but only had {user.coins}. Setting coins to 0.")
+                user.coins = 0 # تصفير الرصيد
+                # أو يمكنك إرجاع خطأ:
+                # return jsonify({"error": f"Insufficient coins. Cannot subtract {amount_to_subtract}."}), 400
+            coins_changed = True
+            app.logger.info(f"User {user_id}: Subtracted {amount_to_subtract} coins. New balance: {user.coins}")
+        except (ValueError, TypeError):
+             return jsonify({"error": "'subtract_coins' must be an integer."}), 400
+
+    if coins_changed:
+        updated_fields.append('coins')
+
+    # التحقق إذا تم تحديث أي شيء
+    if not updated_fields:
+        return jsonify({"message": "No valid fields provided for update."}), 200 # أو 304 Not Modified
+
+    # حفظ التغييرات
+    try:
+        db.session.commit()
+        app.logger.info(f"User {user_id}: Successfully updated fields: {', '.join(updated_fields)}")
+        return jsonify({
+            "message": f"User data updated successfully ({', '.join(updated_fields)}).",
+            "user": user.to_dict() # إرجاع بيانات المستخدم المحدثة
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error committing updates for user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error during update."}), 500
 
 # --- التشغيل المحلي (بدون تغيير) ---
 if __name__ == '__main__':
