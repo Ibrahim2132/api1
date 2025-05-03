@@ -20,7 +20,7 @@ print("Attempting to load environment variables...") # Debug print
 
 # --- تحديد المسارات ---
 
-persistent_data_dir = '/tmp' # أو المسار المناسب لبيئتك
+persistent_data_dir = '/mydata' # أو المسار المناسب لبيئتك
 db_path = os.path.join(persistent_data_dir, 'databases4.db')
 UPLOAD_FOLDER = os.path.join(persistent_data_dir, 'uploads')
 db_dir = os.path.dirname(db_path) # مجلد قاعدة البيانات
