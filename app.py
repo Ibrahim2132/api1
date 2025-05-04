@@ -62,7 +62,7 @@ else:
         print("Configuring Gemini API...")
         genai.configure(api_key=GOOGLE_API_KEY)
         # اختر الموديل المناسب - 'gemini-1.5-flash-latest' is a good balance
-        gemini_model = genai.GenerativeModel('gemini-2.5-flash-preview-04-17')
+        gemini_model = genai.GenerativeModel('gemini-2.5-flash-preview-04-17') # استخدام فلاش للتوازن
         # يمكنك تجربة 'gemini-1.5-pro-latest' لدقة أعلى قد تكون مطلوبة
         # gemini_model = genai.GenerativeModel('gemini-1.5-pro-latest')
         print("Gemini Model configured successfully.")
@@ -97,6 +97,15 @@ class User(db.Model):
     referred_by_me_ids = db.Column(db.Text, nullable=True) # IDs الأشخاص الذين دعاهم هذا المستخدم (JSON list)
     # --- END: إضافة حقول الكوين والإحالة ---
     last_spin_time = db.Column(db.DateTime, nullable=True) # وقت آخر مرة تم فيها تدوير العجلة بنجاح
+
+    # --- START: علاقة مع الإعلانات (لعرضها في البروفايل بسهولة) ---
+    advertisements = db.relationship('Advertisement', backref='advertiser', lazy=True, order_by="Advertisement.created_at.desc()")
+    # backref='advertiser' يتيح الوصول للمستخدم من الإعلان (ad.advertiser)
+    # lazy=True يعني أن الإعلانات لن تُحمّل إلا عند طلبها (افتراضي جيد)
+    # order_by يضمن ترتيب إعلانات المستخدم عند جلبها
+    # --- END: علاقة مع الإعلانات ---
+
+
     def set_password(self, password):
         """إنشاء هاش لكلمة المرور."""
         self.password_hash = generate_password_hash(password)
@@ -115,13 +124,16 @@ class User(db.Model):
                 app.logger.warning(f"User {self.id}: Interests list contains non-string elements. Setting interests to null.")
                 self.interests = None
         else:
-            self.interests = None
+             # تعيين null إذا كانت القائمة None أو فارغة
+            self.interests = None if interests_list is None else json.dumps([])
+
 
     def get_interests(self):
         """استرجاع قائمة الاهتمامات من نص JSON."""
         if self.interests:
             try:
-                return json.loads(self.interests)
+                interests = json.loads(self.interests)
+                return interests if isinstance(interests, list) else []
             except json.JSONDecodeError:
                 app.logger.error(f"User {self.id}: Failed to decode interests JSON: {self.interests}")
                 return []
@@ -137,9 +149,9 @@ class User(db.Model):
                 self.referred_by_me_ids = json.dumps(id_list)
             else:
                 app.logger.warning(f"User {self.id}: referred_by_me_ids list contains non-integer elements. Setting to null.")
-                self.referred_by_me_ids = None
+                self.referred_by_me_ids = json.dumps([]) # تخزين قائمة فارغة
         else:
-            # إذا كانت القائمة فارغة أو غير صالحة، قم بتخزين قائمة فارغة أو null
+            # إذا كانت القائمة فارغة أو غير صالحة، قم بتخزين قائمة فارغة
             self.referred_by_me_ids = json.dumps([]) # الأفضل تخزين قائمة فارغة
 
     def get_referred_by_me_ids(self):
@@ -155,38 +167,43 @@ class User(db.Model):
         return []
     # --- END: إضافة دوال لقائمة المدعوين ---
 
-    def to_dict(self):
-        """إرجاع بيانات المستخدم كقاموس (بدون كلمة المرور)."""
-        # جلب المستخدم الذي دعاه (إذا وجد)
+    def to_dict(self, include_ads=False):
+        """
+        إرجاع بيانات المستخدم كقاموس (بدون كلمة المرور).
+        :param include_ads: إذا كانت True، يتم تضمين قائمة إعلانات المستخدم.
+        """
         referrer_info = None
         if self.referrer_id:
-            # تجنب استعلام آخر داخل to_dict إذا أمكن، لكن هنا ضروري إذا أردنا اسم الداعي
-            # referrer_user = User.query.get(self.referrer_id)
-            # if referrer_user:
-            #     referrer_info = {"id": referrer_user.id, "name": referrer_user.name}
-            # تبسيط: فقط أرجع الـ ID
+             # فقط أرجع الـ ID لتجنب استعلام إضافي هنا
              referrer_info = {"id": self.referrer_id}
 
-
-        return {
+        user_data = {
             "id": self.id,
             "name": self.name,
             "email": self.email,
             "phone_number": self.phone_number,
-            "interests": self.get_interests(), # استرجاع القائمة الفعلية
-            # --- START: إضافة الحقول الجديدة للقاموس ---
+            "interests": self.get_interests(),
             "coins": self.coins,
-            "referrer": referrer_info, # معلومات الشخص الذي دعاه (أو null)
-            "referred_by_me": self.get_referred_by_me_ids() # قائمة IDs الأشخاص الذين دعاهم
-            # --- END: إضافة الحقول الجديدة للقاموس ---
+            "referrer": referrer_info,
+            "referred_by_me": self.get_referred_by_me_ids(),
+            "last_spin_time": self.last_spin_time.isoformat() if self.last_spin_time else None
         }
+
+        # --- START: إضافة الإعلانات إذا طُلبت ---
+        if include_ads:
+            # استغلال العلاقة التي تم تعريفها في الموديل
+            # Advertisement.to_dict() يجب أن تكون موجودة ومستدعاة لكل إعلان
+            user_data["advertisements"] = [ad.to_dict() for ad in self.advertisements]
+        # --- END: إضافة الإعلانات إذا طُلبت ---
+
+        return user_data
 
     def __repr__(self):
         """تمثيل نصي للمستخدم (مفيد للتصحيح)."""
         return f'<User {self.id} - {self.name} ({self.email}) - Coins: {self.coins}>'
 
 
-# --- موديل الإعلانات (Advertisement Model) - بدون تغيير هنا ---
+# --- موديل الإعلانات (Advertisement Model) - تعديل بسيط في to_dict ---
 class Advertisement(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True) # ربط الإعلان بالمستخدم
@@ -202,7 +219,7 @@ class Advertisement(db.Model):
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow) # تاريخ التحديث
     is_active = db.Column(db.Boolean, nullable=False, default=True) # هل الإعلان نشط؟
     is_approved = db.Column(db.Boolean, nullable=False, default=False, index=True) # هل تمت الموافقة على الإعلان؟ (افتراضي لا) - تمت إضافة index
-    # images = db.Column(db.Text, nullable=True) # حقل للصور
+    # images = db.Column(db.Text, nullable=True) # حقل للصور (لا يزال معلقًا)
 
     # دوال الاهتمامات للإعلانات
     def set_interests(self, interests_list):
@@ -213,39 +230,55 @@ class Advertisement(db.Model):
                 app.logger.warning(f"Ad {self.id}: Interests list contains non-string elements. Setting interests to null.")
                 self.interests = None
         else:
-            self.interests = None
+            self.interests = None if interests_list is None else json.dumps([])
 
     def get_interests(self):
         if self.interests:
             try:
-                return json.loads(self.interests)
+                interests = json.loads(self.interests)
+                return interests if isinstance(interests, list) else []
             except json.JSONDecodeError:
                 app.logger.error(f"Ad {self.id}: Failed to decode interests JSON: {self.interests}")
                 return []
         return []
 
     def to_dict(self):
+        """إرجاع بيانات الإعلان كقاموس."""
+        # --- START: إضافة معلومات بسيطة عن المعلن (اختياري) ---
+        # هذا يتطلب وجود العلاقة backref='advertiser' في موديل User
+        # وقد يسبب استعلامًا إضافيًا إذا لم يتم تحميل المعلن مسبقًا (lazy loading)
+        # advertiser_info = None
+        # if self.advertiser: # استخدام backref
+        #     advertiser_info = {"id": self.advertiser.id, "name": self.advertiser.name}
+        # تبسيط: لا نضمن المعلن هنا لتجنب التعقيد/الاستعلامات الإضافية عند جلب قوائم كبيرة
+        # --- END: إضافة معلومات بسيطة عن المعلن ---
+
         return {
-            "id": self.id, "user_id": self.user_id, "title": self.title,
-            "description": self.description, "link": self.link,
+            "id": self.id,
+            "user_id": self.user_id, # نبقي على user_id هنا دائمًا
+            # "advertiser": advertiser_info, # إضافة معلومات المعلن (إذا قررت ذلك)
+            "title": self.title,
+            "description": self.description,
+            "link": self.link,
             "interests": self.get_interests(),
-            "number_of_clicks": self.number_of_clicks, "coin_per_click": self.coin_per_click,
-            "category": self.category, "subcategory": self.subcategory,
+            "number_of_clicks": self.number_of_clicks,
+            "coin_per_click": self.coin_per_click,
+            "category": self.category,
+            "subcategory": self.subcategory,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-            "is_active": self.is_active, "is_approved": self.is_approved,
+            "is_active": self.is_active,
+            "is_approved": self.is_approved,
             # "images": json.loads(self.images) if self.images else []
         }
 
     def __repr__(self):
-        return f'<Advertisement {self.id} - {self.title}>'
+        return f'<Advertisement {self.id} - {self.title} by User {self.user_id}>'
 
 # --- تهيئة قاعدة البيانات (إنشاء الجداول إذا لم تكن موجودة) ---
 try:
     with app.app_context():
         print(f"Initializing database tables at: {db_path}...")
-        # **هام:** إذا كنت لا تستخدم أداة ترحيل، قد تحتاج لحذف ملف .db القديم
-        # عند إضافة أعمدة جديدة إلى موديل موجود.
         db.create_all()
         print("Database tables checked/created successfully.")
 except Exception as e:
@@ -259,214 +292,150 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # الدوال المساعدة _handle_image_upload و _save_entity تبقى كما هي (غير مستخدمة مباشرة في النقاط الرئيسية المعدلة)
-def _handle_image_upload():
-    # ... (الكود الأصلي هنا) ...
-    pass # تبسيط للعرض
-
-def _save_entity(entity, uploaded_filenames):
-    # ... (الكود الأصلي هنا) ...
-    pass # تبسيط للعرض
+# ... (الكود الأصلي هنا) ...
 
 
 # --- نقطة نهاية التسجيل (معدلة لنظام الإحالة) ---
 @app.route('/register', methods=['POST'])
 def register():
-    """نقطة نهاية لإنشاء مستخدم جديد مع دعم الإحالة."""
-    if not request.is_json:
-        return jsonify({"error": "Request must be JSON"}), 400
-
+    # ... (الكود الأصلي هنا بدون تغيير) ...
+    if not request.is_json: return jsonify({"error": "Request must be JSON"}), 400
     data = request.get_json()
     name = data.get('name')
     email = data.get('email')
     password = data.get('password')
     phone_number = data.get('phone_number')
-    interests_list = data.get('interests') # اختياري
-    # --- START: استخراج referrer_id ---
-    referrer_id_from_request = data.get('referrer_id') # اختياري
-    # --- END: استخراج referrer_id ---
-
-    # التحقق من وجود جميع الحقول المطلوبة
+    interests_list = data.get('interests')
+    referrer_id_from_request = data.get('referrer_id')
     missing_fields = []
     if not name: missing_fields.append('name')
     if not email: missing_fields.append('email')
     if not password: missing_fields.append('password')
     if not phone_number: missing_fields.append('phone_number')
-    if missing_fields:
-        return jsonify({"error": f"Missing required fields: {', '.join(missing_fields)}"}), 400
-
-    # التحقق من أن البريد الإلكتروني غير مسجل مسبقًا
-    if User.query.filter_by(email=email).first():
-        return jsonify({"error": "Email address already registered"}), 409 # Conflict
-
-    # التحقق من نوع الاهتمامات
-    if interests_list is not None and not isinstance(interests_list, list):
-        return jsonify({"error": "Field 'interests' must be a list of strings"}), 400
-    if interests_list and not all(isinstance(item, str) for item in interests_list):
-         return jsonify({"error": "All items in 'interests' list must be strings"}), 400
-
-    # --- START: التحقق من الـ Referrer ---
+    if missing_fields: return jsonify({"error": f"Missing required fields: {', '.join(missing_fields)}"}), 400
+    if User.query.filter_by(email=email).first(): return jsonify({"error": "Email address already registered"}), 409
+    if interests_list is not None and not isinstance(interests_list, list): return jsonify({"error": "Field 'interests' must be a list of strings"}), 400
+    if interests_list and not all(isinstance(item, str) for item in interests_list): return jsonify({"error": "All items in 'interests' list must be strings"}), 400
     referrer = None
     valid_referrer_id = None
     if referrer_id_from_request is not None:
-        # تأكد أنه رقم صحيح
-        if not isinstance(referrer_id_from_request, int):
-             return jsonify({"error": "Field 'referrer_id' must be an integer"}), 400
-
-        # ابحث عن المستخدم الداعي
+        if not isinstance(referrer_id_from_request, int): return jsonify({"error": "Field 'referrer_id' must be an integer"}), 400
         referrer = User.query.get(referrer_id_from_request)
-        if referrer is None:
-            # إذا لم يتم العثور على الداعي، أرجع خطأ
-            return jsonify({"error": f"Referrer user with ID {referrer_id_from_request} not found"}), 404 # أو 400 Bad Request
-        else:
-            valid_referrer_id = referrer.id # احتفظ بالـ ID الصحيح
-            app.logger.info(f"Registration attempt with valid referrer: {valid_referrer_id}")
-    # --- END: التحقق من الـ Referrer ---
-
-    # إنشاء مستخدم جديد
+        if referrer is None: return jsonify({"error": f"Referrer user with ID {referrer_id_from_request} not found"}), 404
+        else: valid_referrer_id = referrer.id
+        app.logger.info(f"Registration attempt with valid referrer: {valid_referrer_id}")
     new_user = User(name=name, email=email, phone_number=phone_number)
     new_user.set_password(password)
     new_user.set_interests(interests_list)
-    # --- START: تعيين referrer_id للمستخدم الجديد إذا كان صالحًا ---
-    if valid_referrer_id:
-        new_user.referrer_id = valid_referrer_id
-    # --- END: تعيين referrer_id ---
-    # ملاحظة: قيمة الكوينات الافتراضية (0) وقائمة المدعوين الفارغة يتم تعيينها بواسطة الـ default و set_referred_by_me_ids
+    if valid_referrer_id: new_user.referrer_id = valid_referrer_id
+    new_user.set_referred_by_me_ids([]) # تأكد من تهيئة القائمة الفارغة
 
     try:
-        # الخطوة 1: إضافة المستخدم الجديد وحفظه للحصول على ID
         db.session.add(new_user)
         db.session.commit()
         app.logger.info(f"New user created with ID: {new_user.id}")
-
-        # الخطوة 2: إذا كان هناك referrer صالح، قم بتحديثه
-        if referrer: # استخدم الكائن الذي تم العثور عليه سابقًا
+        if referrer:
             try:
-                # احصل على قائمة المدعوين الحالية للـ referrer
                 referred_ids = referrer.get_referred_by_me_ids()
-                # أضف الـ ID للمستخدم الجديد
-                if new_user.id not in referred_ids: # تجنب الإضافة المكررة (احتياطي)
+                if new_user.id not in referred_ids:
                     referred_ids.append(new_user.id)
-                    referrer.set_referred_by_me_ids(referred_ids) # تحديث القائمة
-
-                # زيادة الكوينات للـ referrer
+                    referrer.set_referred_by_me_ids(referred_ids)
                 referrer.coins += 100
                 app.logger.info(f"Awarding 100 coins to referrer {referrer.id}. New balance: {referrer.coins}")
-
-                # حفظ التغييرات على الـ referrer
                 db.session.commit()
                 app.logger.info(f"Referrer {referrer.id} updated successfully.")
-
             except Exception as e_ref:
-                # إذا فشل تحديث الـ referrer، يجب تسجيل الخطأ ولكن *لا تقم* بإلغاء تسجيل المستخدم الجديد
-                # قد ترغب في إضافة آلية لإعادة المحاولة لاحقًا
-                db.session.rollback() # التراجع عن تغييرات الـ referrer فقط
+                db.session.rollback()
                 app.logger.error(f"ERROR updating referrer {referrer.id} for new user {new_user.id}: {e_ref}", exc_info=True)
-                # لا ترجع خطأ 500 هنا، استمر في إرجاع نجاح تسجيل المستخدم
-
-        # إرجاع بيانات المستخدم الجديد
         return jsonify({
             "message": "User registered successfully!",
-            # new_user تم تحديثه بالـ ID بعد الـ commit الأول
-            "user": new_user.to_dict() # سيحتوي الآن على الكوينات و referrer_id إذا كان موجودًا
-        }), 201 # Created
-
+            "user": new_user.to_dict() # تم تحديثه بالـ ID بعد الـ commit الأول
+        }), 201
     except Exception as e_reg:
-        db.session.rollback() # التراجع عن إضافة المستخدم الجديد
+        db.session.rollback()
         app.logger.error(f"Registration Error: {e_reg}", exc_info=True)
         return jsonify({"error": "Internal Server Error during registration"}), 500
 
-
-# --- نقطة نهاية تسجيل الدخول (بدون تغيير جوهري، فقط الـ to_dict سيعيد بيانات أكثر) ---
+# --- نقطة نهاية تسجيل الدخول (بدون تغيير جوهري) ---
 @app.route('/login', methods=['POST'])
 def login():
-    """نقطة نهاية لتسجيل دخول المستخدم."""
-    if not request.is_json:
-        return jsonify({"error": "Request must be JSON"}), 400
-
+    # ... (الكود الأصلي هنا بدون تغيير) ...
+    if not request.is_json: return jsonify({"error": "Request must be JSON"}), 400
     data = request.get_json()
     email = data.get('email')
     password = data.get('password')
-
-    if not email or not password:
-        return jsonify({"error": "Missing email or password"}), 400
-
+    if not email or not password: return jsonify({"error": "Missing email or password"}), 400
     user = User.query.filter_by(email=email).first()
+    if user is None or not user.check_password(password): return jsonify({"error": "Invalid email or password"}), 401
+    return jsonify({"message": "Login successful!", "user": user.to_dict()}), 200
 
-    if user is None or not user.check_password(password):
-        return jsonify({"error": "Invalid email or password"}), 401 # Unauthorized
-
-    # تسجيل الدخول ناجح، إرجاع بيانات المستخدم المحدثة
-    return jsonify({
-        "message": "Login successful!",
-        "user": user.to_dict() # ستشمل الآن الكوينات ومعلومات الإحالة
-    }), 200 # OK
+# --- نقطة نهاية عجلة الحظ (بدون تغيير جوهري) ---
 @app.route('/users/<int:user_id>/spin_wheel', methods=['POST'])
 def spin_wheel(user_id):
-    """محاولة تدوير عجلة الحظ اليومية للمستخدم."""
+    # ... (الكود الأصلي هنا بدون تغيير) ...
     user = User.query.get(user_id)
-    if user is None:
-        return jsonify({"error": f"User with ID {user_id} not found"}), 404
-
+    if user is None: return jsonify({"error": f"User with ID {user_id} not found"}), 404
     now = datetime.utcnow()
-    cooldown_period = timedelta(hours=24) # فترة الانتظار 24 ساعة
-    # --- حساب الوقت المتبقي (بشكل أدق) ---
+    cooldown_period = timedelta(hours=24)
     remaining_time_str = ""
     remaining_seconds = 0
     can_spin = False
-
     if user.last_spin_time is None:
-        # أول مرة يدور العجلة
         can_spin = True
         app.logger.info(f"User {user_id} spinning for the first time.")
     else:
         time_since_last_spin = now - user.last_spin_time
         if time_since_last_spin >= cooldown_period:
-            # مر وقت كافٍ
             can_spin = True
             app.logger.info(f"User {user_id} eligible to spin again. Last spin was {time_since_last_spin.total_seconds():.0f}s ago.")
         else:
-            # لم يمر وقت كافٍ
             remaining_time = cooldown_period - time_since_last_spin
             remaining_seconds = int(remaining_time.total_seconds())
-            # تحويل الثواني المتبقية إلى ساعات ودقائق وثواني للقراءة
             hours, remainder = divmod(remaining_seconds, 3600)
             minutes, seconds = divmod(remainder, 60)
             remaining_time_str = f"{hours}h {minutes}m {seconds}s"
             app.logger.info(f"User {user_id} tried to spin too early. Remaining time: {remaining_time_str}")
-
     if can_spin:
         try:
-            # *** هنا يمكنك إضافة منطق تحديد الجائزة الفعلية (مثلاً عدد عشوائي من الكوينات) ***
-            # prize_coins = random.randint(10, 50) # مثال: ربح عدد عشوائي من الكوينات
+            # --- هنا يمكن إضافة منطق ربح الكوينات ---
+            # prize_coins = random.randint(10, 50) # مثال
             # user.coins += prize_coins
-
-            # تحديث وقت آخر تدوير ناجح
+            # --- نهاية منطق الربح ---
             user.last_spin_time = now
             db.session.commit()
-
             app.logger.info(f"User {user_id} spin successful. Last spin time updated to {now.isoformat()}")
             return jsonify({
                 "status": 1,
                 "message": "Spin successful! You can spin again in 24 hours.",
-                # "prize": prize_coins # مثال: إرجاع قيمة الجائزة
-                "new_coins_balance": user.coins # إرجاع رصيد الكوينات المحدث (إذا تم تغييرها)
+                "new_coins_balance": user.coins # إرجاع رصيد الكوينات المحدث
             }), 200
         except Exception as e:
             db.session.rollback()
             app.logger.error(f"Error during successful spin commit for user {user_id}: {e}", exc_info=True)
             return jsonify({"error": "Internal server error processing spin"}), 500
     else:
-        # إرجاع حالة الفشل مع الوقت المتبقي
         return jsonify({
             "status": 0,
             "message": f"Please wait. Time remaining: {remaining_time_str}",
-            "remaining_seconds": remaining_seconds # إرجاع الثواني المتبقية قد يكون مفيدًا للـ frontend
-        }), 200 # نستخدم 200 OK حتى لو فشلت المحاولة، لكن status: 0 يوضح ذلك
+            "remaining_seconds": remaining_seconds
+        }), 200 # OK, status: 0 يوضح الفشل
 
-# --- END: نقطة نهاية جديدة لعجلة الحظ ---
+# --- START: نقطة نهاية جديدة لجلب كل المستخدمين ---
+@app.route('/users', methods=['GET'])
+def get_all_users():
+    """نقطة نهاية لجلب قائمة بجميع المستخدمين المسجلين."""
+    try:
+        # يمكنك إضافة .order_by(User.id) أو User.name إذا أردت ترتيبًا معينًا
+        all_users = User.query.all()
+        # استخدام to_dict لكل مستخدم (بدون إعلانات هنا لتقليل الحمل)
+        users_list = [user.to_dict(include_ads=False) for user in all_users]
+        return jsonify(users_list), 200
+    except Exception as e:
+        app.logger.error(f"Error fetching all users: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error fetching users"}), 500
+# --- END: نقطة نهاية جديدة لجلب كل المستخدمين ---
 
-
-# --- نقطة نهاية جلب المستخدم بالـ ID (بدون تغيير جوهري) ---
+# --- نقطة نهاية جلب المستخدم بالـ ID (بدون تغيير جوهري، لكن to_dict تغيرت) ---
 @app.route('/users/<int:user_id>', methods=['GET'])
 def get_user_by_id(user_id):
     """نقطة نهاية لجلب بيانات مستخدم معين بواسطة ID."""
@@ -475,13 +444,33 @@ def get_user_by_id(user_id):
     if user is None:
         return jsonify({"error": f"User with ID {user_id} not found"}), 404
 
-    return jsonify(user.to_dict()), 200 # OK
+    # الآن to_dict يمكنها اختياريًا تضمين الإعلانات، لكن هنا لا نحتاجها
+    return jsonify(user.to_dict(include_ads=False)), 200 # OK
+
+
+# --- START: نقطة نهاية جديدة لجلب بروفايل المستخدم (مع إعلاناته) ---
+@app.route('/profile/<int:user_id>', methods=['GET'])
+def get_user_profile(user_id):
+    """نقطة نهاية لجلب بيانات المستخدم الكاملة بما في ذلك إعلاناته."""
+    user = User.query.get(user_id)
+
+    if user is None:
+        return jsonify({"error": f"User with ID {user_id} not found"}), 404
+
+    try:
+        # استدعاء to_dict مع include_ads=True
+        profile_data = user.to_dict(include_ads=True)
+        return jsonify(profile_data), 200
+    except Exception as e:
+        app.logger.error(f"Error generating profile for user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error generating profile"}), 500
+# --- END: نقطة نهاية جديدة لجلب بروفايل المستخدم ---
 
 
 # --- نقطة نهاية تحديث اهتمامات المستخدم (بدون تغيير) ---
 @app.route('/users/<int:user_id>/interests', methods=['PUT'])
 def update_user_interests(user_id):
-     # ... (الكود الأصلي هنا) ...
+     # ... (الكود الأصلي هنا بدون تغيير) ...
     if not request.is_json: return jsonify({"error": "Request must be JSON"}), 400
     user = User.query.get(user_id)
     if user is None: return jsonify({"error": f"User with ID {user_id} not found"}), 404
@@ -499,31 +488,30 @@ def update_user_interests(user_id):
         app.logger.error(f"Error updating interests for user {user_id}: {e}", exc_info=True)
         return jsonify({"error": "Internal Server Error"}), 500
 
-
-# --- نقاط نهاية الإعلانات (بدون تغيير) ---
+# --- نقطة نهاية إضافة إعلان (بدون تغيير جوهري) ---
 @app.route('/add_advertisement', methods=['POST'])
 def add_advertisement():
-    # ... (الكود الأصلي هنا) ...
+    # ... (الكود الأصلي هنا بدون تغيير) ...
     if not request.is_json: return jsonify({"error": "Request must be JSON"}), 400
     data = request.get_json()
-    # ... (بقية التحققات والإنشاء كما في الكود الأصلي) ...
     user_id = data.get('user_id')
+    if user_id is None: return jsonify({"error": "Missing 'user_id' field"}), 400
     user = User.query.get(user_id)
     if not user: return jsonify({"error": f"User {user_id} not found"}), 404
-    # ... إنشاء new_ad وتعيين الحقول ...
     new_ad = Advertisement(
         user_id=user_id, title=data.get('title'), link=data.get('link'),
         coin_per_click=data.get('coin_per_click'), description=data.get('description'),
         category=data.get('category'), subcategory=data.get('subcategory')
     )
     interests_list = data.get('interests')
-    if interests_list: new_ad.set_interests(interests_list)
-    # التحقق من الحقول الإلزامية الأخرى...
+    if interests_list is not None: # اسمح بـ null أو قائمة
+        if not isinstance(interests_list, list) or not all(isinstance(i, str) for i in interests_list):
+             return jsonify({"error": "'interests' must be a list of strings or null."}), 400
+        new_ad.set_interests(interests_list)
     if not all([new_ad.title, new_ad.link, new_ad.coin_per_click is not None]):
-         return jsonify({"error": "Missing required fields for advertisement"}), 400
+         return jsonify({"error": "Missing required fields: title, link, coin_per_click"}), 400
     if not isinstance(new_ad.coin_per_click, int) or new_ad.coin_per_click < 0:
-         return jsonify({"error": "'coin_per_click' must be non-negative integer"}), 400
-
+         return jsonify({"error": "'coin_per_click' must be a non-negative integer"}), 400
     try:
         db.session.add(new_ad)
         db.session.commit()
@@ -534,10 +522,11 @@ def add_advertisement():
         return jsonify({"error": "Internal Server Error"}), 500
 
 
+# --- نقطة نهاية الموافقة على إعلان (بدون تغيير) ---
 @app.route('/admin/advertisements/<int:ad_id>/approve', methods=['PUT'])
 def approve_advertisement(ad_id):
-    # ... (الكود الأصلي هنا، مع الحماية اللازمة للأدمن) ...
-    # يجب إضافة تحقق من أن المستخدم الذي يستدعي هذه النقطة هو أدمن
+    # ... (الكود الأصلي هنا، مع الحاجة لإضافة حماية الأدمن) ...
+    # !! يجب إضافة تحقق من صلاحيات الأدمن هنا في تطبيق حقيقي !!
     advertisement = Advertisement.query.get(ad_id)
     if advertisement is None: return jsonify({"error": "Ad not found"}), 404
     if advertisement.is_approved: return jsonify({"message": "Already approved", "advertisement": advertisement.to_dict()}), 200
@@ -551,159 +540,254 @@ def approve_advertisement(ad_id):
         app.logger.error(f"Error approving ad {ad_id}: {e}", exc_info=True)
         return jsonify({"error": "Internal Server Error"}), 500
 
-
+# --- START: تعديل نقطة نهاية جلب الإعلانات لإضافة الفلترة ---
 @app.route('/advertisements', methods=['GET'])
-def get_all_advertisements():
-    # ... (الكود الأصلي هنا) ...
-    all_ads = Advertisement.query.order_by(Advertisement.created_at.desc()).all()
-    return jsonify([ad.to_dict() for ad in all_ads]), 200
+def get_advertisements_filtered():
+    """
+    نقطة نهاية لجلب الإعلانات مع دعم الفلترة عبر query parameters.
+    الفلاتر الممكنة:
+    - user_id (int): جلب إعلانات مستخدم معين.
+    - category (str): جلب الإعلانات بفئة معينة (مطابقة تامة، حساسة لحالة الأحرف).
+    - subcategory (str): جلب الإعلانات بفئة فرعية معينة.
+    - is_active (bool: 'true'/'false'): جلب الإعلانات النشطة أو غير النشطة.
+    - is_approved (bool: 'true'/'false'): جلب الإعلانات الموافق عليها أو غير الموافق عليها.
+    - min_clicks (int): جلب الإعلانات بعدد نقرات أكبر من أو يساوي القيمة.
+    - max_clicks (int): جلب الإعلانات بعدد نقرات أقل من أو يساوي القيمة.
+    - min_cpc (int): جلب الإعلانات بتكلفة نقرة أكبر من أو تساوي القيمة.
+    - max_cpc (int): جلب الإعلانات بتكلفة نقرة أقل من أو تساوي القيمة.
+    - title_contains (str): جلب الإعلانات التي يحتوي عنوانها على النص (غير حساس لحالة الأحرف).
+    - description_contains (str): جلب الإعلانات التي يحتوي وصفها على النص (غير حساس لحالة الأحرف).
+    - link_contains (str): جلب الإعلانات التي يحتوي رابطها على النص (غير حساس لحالة الأحرف).
+    - interests_contain (str): جلب الإعلانات التي تحتوي قائمة اهتماماتها على الاهتمام المحدد (بحث نصي في JSON).
+    """
+    try:
+        query = Advertisement.query # البدء بالاستعلام الأساسي
+
+        # فلتر user_id
+        user_id_filter = request.args.get('user_id')
+        if user_id_filter:
+            try:
+                query = query.filter(Advertisement.user_id == int(user_id_filter))
+            except ValueError:
+                return jsonify({"error": "Invalid user_id parameter. Must be an integer."}), 400
+
+        # فلتر category
+        category_filter = request.args.get('category')
+        if category_filter:
+            query = query.filter(Advertisement.category == category_filter)
+
+        # فلتر subcategory
+        subcategory_filter = request.args.get('subcategory')
+        if subcategory_filter:
+            query = query.filter(Advertisement.subcategory == subcategory_filter)
+
+        # فلتر is_active
+        is_active_filter = request.args.get('is_active')
+        if is_active_filter is not None:
+            if is_active_filter.lower() == 'true':
+                query = query.filter(Advertisement.is_active == True)
+            elif is_active_filter.lower() == 'false':
+                query = query.filter(Advertisement.is_active == False)
+            else:
+                 return jsonify({"error": "Invalid is_active parameter. Use 'true' or 'false'."}), 400
+
+        # فلتر is_approved
+        is_approved_filter = request.args.get('is_approved')
+        if is_approved_filter is not None:
+            if is_approved_filter.lower() == 'true':
+                query = query.filter(Advertisement.is_approved == True)
+            elif is_approved_filter.lower() == 'false':
+                query = query.filter(Advertisement.is_approved == False)
+            else:
+                 return jsonify({"error": "Invalid is_approved parameter. Use 'true' or 'false'."}), 400
+
+        # فلتر min_clicks
+        min_clicks_filter = request.args.get('min_clicks')
+        if min_clicks_filter:
+            try:
+                query = query.filter(Advertisement.number_of_clicks >= int(min_clicks_filter))
+            except ValueError:
+                return jsonify({"error": "Invalid min_clicks parameter. Must be an integer."}), 400
+
+        # فلتر max_clicks
+        max_clicks_filter = request.args.get('max_clicks')
+        if max_clicks_filter:
+            try:
+                query = query.filter(Advertisement.number_of_clicks <= int(max_clicks_filter))
+            except ValueError:
+                return jsonify({"error": "Invalid max_clicks parameter. Must be an integer."}), 400
+
+        # فلتر min_cpc (coin_per_click)
+        min_cpc_filter = request.args.get('min_cpc')
+        if min_cpc_filter:
+            try:
+                query = query.filter(Advertisement.coin_per_click >= int(min_cpc_filter))
+            except ValueError:
+                return jsonify({"error": "Invalid min_cpc parameter. Must be an integer."}), 400
+
+        # فلتر max_cpc (coin_per_click)
+        max_cpc_filter = request.args.get('max_cpc')
+        if max_cpc_filter:
+            try:
+                query = query.filter(Advertisement.coin_per_click <= int(max_cpc_filter))
+            except ValueError:
+                return jsonify({"error": "Invalid max_cpc parameter. Must be an integer."}), 400
+
+        # فلتر title_contains (case-insensitive)
+        title_contains_filter = request.args.get('title_contains')
+        if title_contains_filter:
+            query = query.filter(Advertisement.title.ilike(f'%{title_contains_filter}%'))
+
+        # فلتر description_contains (case-insensitive)
+        description_contains_filter = request.args.get('description_contains')
+        if description_contains_filter:
+            # تأكد من أن الوصف ليس NULL قبل البحث فيه
+            query = query.filter(Advertisement.description != None, Advertisement.description.ilike(f'%{description_contains_filter}%'))
+
+        # فلتر link_contains (case-insensitive)
+        link_contains_filter = request.args.get('link_contains')
+        if link_contains_filter:
+            query = query.filter(Advertisement.link.ilike(f'%{link_contains_filter}%'))
+
+        # فلتر interests_contain (بحث نصي في JSON)
+        # ملاحظة: هذا الفلتر بسيط وقد لا يكون فعالًا جدًا لقواعد البيانات الكبيرة.
+        # قد تحتاج إلى حلول أكثر تقدمًا (مثل حقل منفصل أو Full-Text Search) للأداء الأفضل.
+        interest_filter = request.args.get('interests_contain')
+        if interest_filter:
+            # البحث عن السلسلة النصية للاهتمام ضمن حقل JSON النصي
+            # يجب أن يكون الاهتمام محاطًا بعلامات اقتباس مزدوجة في JSON
+            search_term = f'"{interest_filter}"'
+            query = query.filter(Advertisement.interests.ilike(f'%{search_term}%'))
 
 
+        # --- الترتيب ---
+        # يمكنك إضافة ترتيب افتراضي أو السماح بالترتيب عبر بارامتر آخر
+        query = query.order_by(Advertisement.created_at.desc())
+
+        # --- تنفيذ الاستعلام ---
+        filtered_ads = query.all()
+
+        return jsonify([ad.to_dict() for ad in filtered_ads]), 200
+
+    except Exception as e:
+        app.logger.error(f"Error fetching or filtering advertisements: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error fetching advertisements"}), 500
+
+# --- END: تعديل نقطة نهاية جلب الإعلانات لإضافة الفلترة ---
+
+# --- نقطة نهاية جلب الإعلانات الموافق عليها فقط (يمكن الآن استخدام /advertisements?is_approved=true) ---
+# يمكنك إما إبقاء هذه النقطة للاختصار أو إزالتها والاعتماد على الفلتر
 @app.route('/advertisements/approved', methods=['GET'])
 def get_approved_advertisements():
-    # ... (الكود الأصلي هنا) ...
-    approved_ads = Advertisement.query.filter_by(is_approved=True, is_active=True)\
-                                      .order_by(Advertisement.created_at.desc()).all()
-    return jsonify([ad.to_dict() for ad in approved_ads]), 200
+    """نقطة نهاية مختصرة لجلب الإعلانات الموافق عليها والنشطة فقط."""
+    try:
+        approved_ads = Advertisement.query.filter_by(is_approved=True, is_active=True)\
+                                          .order_by(Advertisement.created_at.desc()).all()
+        return jsonify([ad.to_dict() for ad in approved_ads]), 200
+    except Exception as e:
+        app.logger.error(f"Error fetching approved advertisements: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error fetching approved advertisements"}), 500
+
+# --- START: نقطة نهاية جديدة لجلب إعلانات مستخدم معين ---
+# هذه مكررة جزئيًا مع الفلترة في /advertisements?user_id=...
+# ولكن قد تكون مفيدة كاختصار أو لمسار أكثر وضوحًا
+@app.route('/users/<int:user_id>/advertisements', methods=['GET'])
+def get_user_advertisements(user_id):
+    """نقطة نهاية لجلب جميع الإعلانات التي أنشأها مستخدم معين."""
+    # أولاً، تحقق من وجود المستخدم (اختياري، لكن جيد)
+    user = User.query.get(user_id)
+    if user is None:
+        return jsonify({"error": f"User with ID {user_id} not found"}), 404
+
+    try:
+        # استخدم العلاقة العكسية (backref) أو فلتر مباشر
+        # الطريقة 1: باستخدام الفلتر (كما في /advertisements)
+        user_ads = Advertisement.query.filter_by(user_id=user_id)\
+                                     .order_by(Advertisement.created_at.desc())\
+                                     .all()
+
+        # الطريقة 2: باستخدام العلاقة (إذا تم تعريفها بشكل صحيح في User model)
+        # user_ads = user.advertisements # هذا سيجلب الإعلانات المرتبة بالفعل
+
+        return jsonify([ad.to_dict() for ad in user_ads]), 200
+    except Exception as e:
+        app.logger.error(f"Error fetching advertisements for user {user_id}: {e}", exc_info=True)
+        return jsonify({"error": f"Internal Server Error fetching advertisements for user {user_id}"}), 500
+
 @app.route('/analyze_like_status', methods=['POST'])
 def analyze_like_status():
-    """تحليل صورة لتحديد حالة الإعجاب والتحقق من التكرار."""
-    if not gemini_model:
-        app.logger.error("analyze_like_status endpoint called but Gemini model is not configured.")
-        return jsonify({"error": "Image analysis service is currently unavailable."}), 503 # Service Unavailable
-
-    # 1. التحقق من وجود ملف الصورة في الطلب
-    if 'image' not in request.files:
-        return jsonify({"error": "Missing 'image' file part in the request."}), 400
-
+    # ... (الكود الأصلي هنا بدون تغيير) ...
+    if not gemini_model: return jsonify({"error": "Image analysis service is currently unavailable."}), 503
+    if 'image' not in request.files: return jsonify({"error": "Missing 'image' file part in the request."}), 400
     file = request.files['image']
-
-    # 2. التحقق من أن اسم الملف ليس فارغًا (اختياري لكن جيد)
-    if file.filename == '':
-        return jsonify({"error": "No file selected."}), 400
-
-    # 3. قراءة بايتات الصورة وحساب الهاش
+    if file.filename == '': return jsonify({"error": "No file selected."}), 400
     try:
         img_bytes = file.read()
-        if not img_bytes:
-             return jsonify({"error": "Empty image file received."}), 400
-
-        # استخدم SHA256 لأنه أكثر أمانًا من MD5
+        if not img_bytes: return jsonify({"error": "Empty image file received."}), 400
         img_hash = hashlib.sha256(img_bytes).hexdigest()
         app.logger.debug(f"Calculated hash for uploaded image: {img_hash}")
-
     except Exception as e:
         app.logger.error(f"Error reading or hashing image file: {e}", exc_info=True)
         return jsonify({"error": "Could not process image file."}), 400
-
-    # 4. التحقق من تكرار الصورة
     if img_hash in processed_image_hashes:
         app.logger.warning(f"Duplicate image detected with hash: {img_hash}")
-        return jsonify({
-            "status": -1, # استخدام -1 للإشارة إلى التكرار
-            "message": "Image already processed."
-        }), 200 # OK، لكن الـ status يوضح التكرار
-
+        return jsonify({"status": -1, "message": "Image already processed."}), 200
     app.logger.info(f"Processing new image with hash: {img_hash}")
-
-    # 5. محاولة فتح الصورة باستخدام Pillow للتحقق من صلاحيتها قبل إرسالها
     try:
         img = Image.open(io.BytesIO(img_bytes))
-        # يمكنك إضافة تحققات أخرى هنا (مثل الأبعاد، النوع) إذا لزم الأمر
-        img.verify() # محاولة بسيطة للتحقق من أن الملف ليس تالفًا تمامًا
-        # إعادة فتح الصورة بعد verify لأن verify تستهلك stream
+        img.verify()
         img = Image.open(io.BytesIO(img_bytes))
-        print(f"Image verified and re-opened successfully (format: {img.format}).") # Debug print
-
+        print(f"Image verified and re-opened successfully (format: {img.format}).")
     except Exception as e:
         app.logger.error(f"Invalid or corrupted image file for hash {img_hash}: {e}", exc_info=True)
-        # لا نضيف الهاش للـ set إذا كانت الصورة تالفة
         return jsonify({"error": "Invalid or corrupted image file."}), 400
-
-    # 6. إرسال الصورة إلى Gemini للتحليل
     try:
         app.logger.info(f"Sending image {img_hash} to Gemini for like detection...")
         response = gemini_model.generate_content([LIKE_DETECTION_PROMPT, img])
-
-        # 7. معالجة استجابة Gemini
         if response.parts:
             raw_result = response.text.strip()
             app.logger.info(f"Raw Gemini response for hash {img_hash}: '{raw_result}'")
-
             if raw_result == "1":
-                # نجاح - الصورة معلمة كـ "معجب به"
-                processed_image_hashes.add(img_hash) # إضافة الهاش بعد النجاح
+                processed_image_hashes.add(img_hash)
                 app.logger.info(f"Hash {img_hash} added to processed set. Current set size: {len(processed_image_hashes)}")
                 return jsonify({"status": 1, "message": "Image indicates liked status."}), 200
             elif raw_result == "0":
-                # نجاح - الصورة معلمة كـ "غير معجب به"
-                processed_image_hashes.add(img_hash) # إضافة الهاش بعد النجاح
+                processed_image_hashes.add(img_hash)
                 app.logger.info(f"Hash {img_hash} added to processed set. Current set size: {len(processed_image_hashes)}")
                 return jsonify({"status": 0, "message": "Image indicates not liked status."}), 200
             else:
-                # استجابة غير متوقعة من Gemini
                 app.logger.error(f"Unexpected Gemini response for hash {img_hash}: '{raw_result}'. Expected '1' or '0'.")
-                # لا نضيف الهاش في هذه الحالة لأن التحليل لم يكن حاسمًا
-                return jsonify({"error": f"Analysis returned unexpected result: '{raw_result}'"}), 500 # خطأ في الخادم لأن الاستجابة غير متوقعة
+                return jsonify({"error": f"Analysis returned unexpected result: '{raw_result}'"}), 500
         else:
-            # لم ترجع Gemini محتوى (قد يكون بسبب فلاتر الأمان)
             feedback = response.prompt_feedback if hasattr(response, 'prompt_feedback') else 'N/A'
             app.logger.error(f"Gemini returned no content for hash {img_hash}. Feedback: {feedback}")
-            # لا نضيف الهاش
             return jsonify({"error": "Analysis failed or content blocked by safety filters."}), 500
-
     except Exception as e:
         app.logger.error(f"Error calling Gemini API for hash {img_hash}: {e}", exc_info=True)
-        # لا نضيف الهاش
-        return jsonify({"error": f"An error occurred during image analysis: {str(e)}"}), 500 # خطأ عام في الخادم
+        return jsonify({"error": f"An error occurred during image analysis: {str(e)}"}), 500
+
 @app.route('/analyze_comment_status', methods=['POST'])
 def analyze_comment_status():
-    """تحليل صورة للبحث عن تعليق من مستخدم معين والتحقق من تكرار الصورة."""
-    if not gemini_model:
-        app.logger.error("analyze_comment_status endpoint called but Gemini model is not configured.")
-        return jsonify({"error": "Image analysis service is currently unavailable."}), 503
-
-    # 1. التحقق من وجود البيانات المطلوبة (صورة واسم مستخدم)
-    if 'image' not in request.files:
-        return jsonify({"error": "Missing 'image' file part in the request."}), 400
-    if 'username' not in request.form:
-        return jsonify({"error": "Missing 'username' form field in the request."}), 400
-
+    # ... (الكود الأصلي هنا بدون تغيير) ...
+    if not gemini_model: return jsonify({"error": "Image analysis service is currently unavailable."}), 503
+    if 'image' not in request.files: return jsonify({"error": "Missing 'image' file part in the request."}), 400
+    if 'username' not in request.form: return jsonify({"error": "Missing 'username' form field in the request."}), 400
     file = request.files['image']
-    username = request.form['username'] # احصل على اسم المستخدم من الـ form data
-
-    # 2. التحقق من أن اسم المستخدم ليس فارغًا
-    if not username:
-        return jsonify({"error": "'username' cannot be empty."}), 400
-
-    # 3. التحقق من أن اسم الملف ليس فارغًا
-    if file.filename == '':
-        return jsonify({"error": "No image file selected."}), 400
-
-    # 4. قراءة بايتات الصورة وحساب الهاش (نفس كود تحليل الإعجاب)
+    username = request.form['username']
+    if not username: return jsonify({"error": "'username' cannot be empty."}), 400
+    if file.filename == '': return jsonify({"error": "No image file selected."}), 400
     try:
         img_bytes = file.read()
-        if not img_bytes:
-             return jsonify({"error": "Empty image file received."}), 400
+        if not img_bytes: return jsonify({"error": "Empty image file received."}), 400
         img_hash = hashlib.sha256(img_bytes).hexdigest()
         app.logger.debug(f"Calculated hash for comment analysis image: {img_hash}")
     except Exception as e:
         app.logger.error(f"Error reading or hashing image file for comment analysis: {e}", exc_info=True)
         return jsonify({"error": "Could not process image file."}), 400
-
-    # 5. التحقق من تكرار الصورة (نفس كود تحليل الإعجاب)
     if img_hash in processed_image_hashes:
         app.logger.warning(f"Duplicate image detected for comment analysis with hash: {img_hash}")
-        # حتى لو الصورة مكررة، قد يكون المستخدم يبحث عن username مختلف،
-        # لكن منطق السؤال هو "هل الصورة مكررة"، لذا نرجع -1
-        return jsonify({
-            "status": -1,
-            "message": "Image already processed (for like or comment)."
-        }), 200
-
+        return jsonify({"status": -1,"message": "Image already processed (for like or comment)."}), 200
     app.logger.info(f"Processing new image for comment analysis. Hash: {img_hash}, Username: '{username}'")
-
-    # 6. محاولة فتح الصورة والتحقق منها (نفس كود تحليل الإعجاب)
     try:
         img = Image.open(io.BytesIO(img_bytes))
         img.verify()
@@ -712,83 +796,51 @@ def analyze_comment_status():
     except Exception as e:
         app.logger.error(f"Invalid or corrupted image file for comment analysis {img_hash}: {e}", exc_info=True)
         return jsonify({"error": "Invalid or corrupted image file."}), 400
-
-    # 7. إرسال الصورة والـ Prompt الخاص بالتعليقات إلى Gemini
     try:
-        # قم بتضمين اسم المستخدم في الـ Prompt
         comment_prompt = COMMENT_DETECTION_PROMPT.format(username=username)
         app.logger.info(f"Sending image {img_hash} to Gemini for comment detection (user: '{username}').")
-        # تأكد من تمرير الـ Prompt الجديد
         response = gemini_model.generate_content([comment_prompt, img])
-
-        # 8. معالجة استجابة Gemini
         if response.parts:
             raw_result = response.text.strip()
             app.logger.info(f"Raw Gemini comment response for hash {img_hash} (user: '{username}'): '{raw_result}'")
-
             if raw_result == "1":
-                # نجاح - تم العثور على تعليق للمستخدم
-                processed_image_hashes.add(img_hash) # أضف الهاش
+                processed_image_hashes.add(img_hash)
                 app.logger.info(f"Comment found. Hash {img_hash} added to processed set. Size: {len(processed_image_hashes)}")
                 return jsonify({"status": 1, "message": f"Comment found for username '{username}'."}), 200
             elif raw_result == "0":
-                # نجاح - لم يتم العثور على تعليق للمستخدم
-                processed_image_hashes.add(img_hash) # أضف الهاش
+                processed_image_hashes.add(img_hash)
                 app.logger.info(f"Comment not found. Hash {img_hash} added to processed set. Size: {len(processed_image_hashes)}")
                 return jsonify({"status": 0, "message": f"Comment not found for username '{username}'."}), 200
             else:
-                # استجابة غير متوقعة
                 app.logger.error(f"Unexpected Gemini comment response for hash {img_hash} (user: '{username}'): '{raw_result}'.")
                 return jsonify({"error": f"Analysis returned unexpected result: '{raw_result}'"}), 500
         else:
-            # لا يوجد محتوى (ربما فلاتر الأمان)
             feedback = response.prompt_feedback if hasattr(response, 'prompt_feedback') else 'N/A'
             app.logger.error(f"Gemini returned no content for comment analysis {img_hash} (user: '{username}'). Feedback: {feedback}")
             return jsonify({"error": "Comment analysis failed or content blocked by safety filters."}), 500
-
     except Exception as e:
         app.logger.error(f"Error calling Gemini API for comment analysis {img_hash} (user: '{username}'): {e}", exc_info=True)
         return jsonify({"error": f"An error occurred during comment analysis: {str(e)}"}), 500
 
 @app.route('/analyze_share_status', methods=['POST'])
 def analyze_share_status():
-    """تحليل صورة لتحديد حالة المشاركة والتحقق من التكرار."""
-    if not gemini_model:
-        app.logger.error("analyze_share_status endpoint called but Gemini model is not configured.")
-        return jsonify({"error": "Image analysis service is currently unavailable."}), 503
-
-    # 1. التحقق من وجود ملف الصورة
-    if 'image' not in request.files:
-        return jsonify({"error": "Missing 'image' file part in the request."}), 400
-
+    # ... (الكود الأصلي هنا بدون تغيير) ...
+    if not gemini_model: return jsonify({"error": "Image analysis service is currently unavailable."}), 503
+    if 'image' not in request.files: return jsonify({"error": "Missing 'image' file part in the request."}), 400
     file = request.files['image']
-
-    # 2. التحقق من اسم الملف
-    if file.filename == '':
-        return jsonify({"error": "No file selected."}), 400
-
-    # 3. قراءة البايتات وحساب الهاش
+    if file.filename == '': return jsonify({"error": "No file selected."}), 400
     try:
         img_bytes = file.read()
-        if not img_bytes:
-             return jsonify({"error": "Empty image file received."}), 400
+        if not img_bytes: return jsonify({"error": "Empty image file received."}), 400
         img_hash = hashlib.sha256(img_bytes).hexdigest()
         app.logger.debug(f"Calculated hash for share analysis image: {img_hash}")
     except Exception as e:
         app.logger.error(f"Error reading or hashing image file for share analysis: {e}", exc_info=True)
         return jsonify({"error": "Could not process image file."}), 400
-
-    # 4. التحقق من التكرار
     if img_hash in processed_image_hashes:
         app.logger.warning(f"Duplicate image detected for share analysis with hash: {img_hash}")
-        return jsonify({
-            "status": -1,
-            "message": "Image already processed (for like, comment, or share)." # تعديل الرسالة قليلاً
-        }), 200
-
+        return jsonify({"status": -1, "message": "Image already processed (for like, comment, or share)."}), 200
     app.logger.info(f"Processing new image for share analysis. Hash: {img_hash}")
-
-    # 5. التحقق من صحة الصورة
     try:
         img = Image.open(io.BytesIO(img_bytes))
         img.verify()
@@ -797,139 +849,122 @@ def analyze_share_status():
     except Exception as e:
         app.logger.error(f"Invalid or corrupted image file for share analysis {img_hash}: {e}", exc_info=True)
         return jsonify({"error": "Invalid or corrupted image file."}), 400
-
-    # 6. إرسال الصورة والـ Prompt الخاص بالمشاركة إلى Gemini
     try:
         app.logger.info(f"Sending image {img_hash} to Gemini for share detection...")
-        # استخدم الـ Prompt الجديد
         response = gemini_model.generate_content([SHARE_DETECTION_PROMPT, img])
-
-        # 7. معالجة استجابة Gemini
         if response.parts:
             raw_result = response.text.strip()
             app.logger.info(f"Raw Gemini share response for hash {img_hash}: '{raw_result}'")
-
             if raw_result == "1":
-                # نجاح - تم العثور على مؤشر مشاركة
                 processed_image_hashes.add(img_hash)
                 app.logger.info(f"Share detected. Hash {img_hash} added to processed set. Size: {len(processed_image_hashes)}")
                 return jsonify({"status": 1, "message": "Image indicates shared status."}), 200
             elif raw_result == "0":
-                # نجاح - لم يتم العثور على مؤشر مشاركة
                 processed_image_hashes.add(img_hash)
                 app.logger.info(f"Share not detected. Hash {img_hash} added to processed set. Size: {len(processed_image_hashes)}")
                 return jsonify({"status": 0, "message": "Image indicates not shared status."}), 200
             else:
-                # استجابة غير متوقعة
                 app.logger.error(f"Unexpected Gemini share response for hash {img_hash}: '{raw_result}'.")
                 return jsonify({"error": f"Analysis returned unexpected result: '{raw_result}'"}), 500
         else:
-            # لا يوجد محتوى
             feedback = response.prompt_feedback if hasattr(response, 'prompt_feedback') else 'N/A'
             app.logger.error(f"Gemini returned no content for share analysis {img_hash}. Feedback: {feedback}")
             return jsonify({"error": "Share analysis failed or content blocked by safety filters."}), 500
-
     except Exception as e:
         app.logger.error(f"Error calling Gemini API for share analysis {img_hash}: {e}", exc_info=True)
         return jsonify({"error": f"An error occurred during share analysis: {str(e)}"}), 500
+@app.route('/admin/advertisements/<int:ad_id>/reject', methods=['DELETE']) # <-- استخدام DELETE
+def reject_and_delete_advertisement(ad_id):
+    """
+    نقطة نهاية لرفض إعلان معين عن طريق حذفه نهائيًا (للأدمن فقط).
+    """
+    # !!! IMPORTANT: Add Admin Authentication/Authorization Check here !!!
+    # Example: if not is_admin(current_user): return jsonify({"error": "Forbidden - Admin access required"}), 403
+    app.logger.warning(f"Admin attempting action: Reject and DELETE advertisement {ad_id}. Ensure proper authorization is implemented!")
 
+    advertisement = Advertisement.query.get(ad_id)
+
+    if advertisement is None:
+        app.logger.warning(f"Admin action failed: Advertisement {ad_id} not found for rejection/deletion.")
+        # إذا لم يتم العثور عليه، فقد يكون قد تم حذفه بالفعل، لذا يمكن إرجاع 200 أو 404
+        return jsonify({"error": f"Advertisement with ID {ad_id} not found (or already deleted)"}), 404
+
+    try:
+        # حذف الإعلان من الجلسة
+        db.session.delete(advertisement)
+        # تطبيق الحذف في قاعدة البيانات
+        db.session.commit()
+        app.logger.info(f"Admin action: Advertisement {ad_id} rejected and DELETED successfully.")
+        # إرجاع رسالة نجاح (يمكن استخدام 200 أو 204 No Content)
+        return jsonify({"message": f"Advertisement {ad_id} rejected and deleted successfully."}), 200
+
+    except Exception as e:
+        # التراجع في حالة حدوث خطأ
+        db.session.rollback()
+        app.logger.error(f"Error rejecting/deleting advertisement {ad_id}: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error during advertisement rejection/deletion"}), 500
+# --- نقطة نهاية تحديث بيانات المستخدم (PATCH) (بدون تغيير) ---
 @app.route('/users/<int:user_id>', methods=['PATCH'])
 def update_user_data(user_id):
-    """تحديث بيانات مستخدم معين (الاسم، الهاتف، الاهتمامات، إضافة/طرح كوينز)."""
+    # ... (الكود الأصلي هنا بدون تغيير) ...
     user = User.query.get(user_id)
-    if user is None:
-        return jsonify({"error": f"User with ID {user_id} not found"}), 404
-
-    if not request.is_json:
-        return jsonify({"error": "Request must be JSON"}), 400
-
+    if user is None: return jsonify({"error": f"User with ID {user_id} not found"}), 404
+    if not request.is_json: return jsonify({"error": "Request must be JSON"}), 400
     data = request.get_json()
-    if not data:
-        return jsonify({"error": "Request body cannot be empty for update"}), 400
-
-    updated_fields = [] # لتتبع الحقول التي تم تحديثها
-
-    # تحديث الاسم
+    if not data: return jsonify({"error": "Request body cannot be empty for update"}), 400
+    updated_fields = []
     if 'name' in data:
         new_name = data['name']
         if isinstance(new_name, str) and new_name.strip():
             user.name = new_name.strip()
             updated_fields.append('name')
             app.logger.info(f"User {user_id}: Name updated.")
-        else:
-            return jsonify({"error": "Invalid value for 'name'. Must be a non-empty string."}), 400
-
-    # تحديث رقم الهاتف
+        else: return jsonify({"error": "Invalid value for 'name'. Must be a non-empty string."}), 400
     if 'phone_number' in data:
         new_phone = data['phone_number']
-        # يمكنك إضافة تحقق أكثر تفصيلاً من صيغة الرقم هنا
         if isinstance(new_phone, str) and new_phone.strip():
             user.phone_number = new_phone.strip()
             updated_fields.append('phone_number')
             app.logger.info(f"User {user_id}: Phone number updated.")
-        else:
-            return jsonify({"error": "Invalid value for 'phone_number'. Must be a non-empty string."}), 400
-
-    # تحديث الاهتمامات
+        else: return jsonify({"error": "Invalid value for 'phone_number'. Must be a non-empty string."}), 400
     if 'interests' in data:
         interests_list = data['interests']
         if interests_list is None or (isinstance(interests_list, list) and all(isinstance(i, str) for i in interests_list)):
-            user.set_interests(interests_list) # الدالة تعالج None أو القائمة الصحيحة
+            user.set_interests(interests_list)
             updated_fields.append('interests')
             app.logger.info(f"User {user_id}: Interests updated.")
-        else:
-             return jsonify({"error": "'interests' must be a list of strings or null."}), 400
-
-    # تحديث الكوينز (إضافة/طرح)
+        else: return jsonify({"error": "'interests' must be a list of strings or null."}), 400
     coins_changed = False
     if 'add_coins' in data:
         try:
             amount_to_add = int(data['add_coins'])
-            if amount_to_add < 0:
-                 return jsonify({"error": "'add_coins' must be a non-negative integer."}), 400
+            if amount_to_add < 0: return jsonify({"error": "'add_coins' must be a non-negative integer."}), 400
             user.coins += amount_to_add
             coins_changed = True
             app.logger.info(f"User {user_id}: Added {amount_to_add} coins. New balance: {user.coins}")
-        except (ValueError, TypeError):
-            return jsonify({"error": "'add_coins' must be an integer."}), 400
-
+        except (ValueError, TypeError): return jsonify({"error": "'add_coins' must be an integer."}), 400
     if 'subtract_coins' in data:
         try:
             amount_to_subtract = int(data['subtract_coins'])
-            if amount_to_subtract < 0:
-                 return jsonify({"error": "'subtract_coins' must be a non-negative integer."}), 400
-            if user.coins >= amount_to_subtract:
-                user.coins -= amount_to_subtract
+            if amount_to_subtract < 0: return jsonify({"error": "'subtract_coins' must be a non-negative integer."}), 400
+            if user.coins >= amount_to_subtract: user.coins -= amount_to_subtract
             else:
-                # منع الرصيد السالب، يمكنك إرجاع خطأ أو تصفير الرصيد
                 app.logger.warning(f"User {user_id}: Tried to subtract {amount_to_subtract} coins, but only had {user.coins}. Setting coins to 0.")
-                user.coins = 0 # تصفير الرصيد
-                # أو يمكنك إرجاع خطأ:
-                # return jsonify({"error": f"Insufficient coins. Cannot subtract {amount_to_subtract}."}), 400
+                user.coins = 0
             coins_changed = True
             app.logger.info(f"User {user_id}: Subtracted {amount_to_subtract} coins. New balance: {user.coins}")
-        except (ValueError, TypeError):
-             return jsonify({"error": "'subtract_coins' must be an integer."}), 400
-
-    if coins_changed:
-        updated_fields.append('coins')
-
-    # التحقق إذا تم تحديث أي شيء
-    if not updated_fields:
-        return jsonify({"message": "No valid fields provided for update."}), 200 # أو 304 Not Modified
-
-    # حفظ التغييرات
+        except (ValueError, TypeError): return jsonify({"error": "'subtract_coins' must be an integer."}), 400
+    if coins_changed: updated_fields.append('coins')
+    if not updated_fields: return jsonify({"message": "No valid fields provided for update."}), 200 # أو 304
     try:
         db.session.commit()
         app.logger.info(f"User {user_id}: Successfully updated fields: {', '.join(updated_fields)}")
-        return jsonify({
-            "message": f"User data updated successfully ({', '.join(updated_fields)}).",
-            "user": user.to_dict() # إرجاع بيانات المستخدم المحدثة
-        }), 200
+        return jsonify({"message": f"User data updated successfully ({', '.join(updated_fields)}).", "user": user.to_dict()}), 200
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Error committing updates for user {user_id}: {e}", exc_info=True)
         return jsonify({"error": "Internal Server Error during update."}), 500
+
 
 # --- التشغيل المحلي (بدون تغيير) ---
 if __name__ == '__main__':
