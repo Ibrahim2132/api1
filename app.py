@@ -56,14 +56,24 @@ else:
     try:
         print("Configuring Gemini API...")
         genai.configure(api_key=GOOGLE_API_KEY)
-        gemini_model = genai.GenerativeModel('gemini-1.5-flash-latest') # تم التغيير إلى فلاش الأحدث
+        gemini_model = genai.GenerativeModel('gemini-2.0-flash') # تم التغيير إلى فلاش الأحدث
         print("Gemini Model configured successfully.")
     except Exception as e:
         print(f"ERROR configuring Gemini API: {e}. Image analysis will be disabled.")
         gemini_model = None
 
 # --- Define the Fixed Prompts for Gemini ---
-LIKE_DETECTION_PROMPT = """Analyze this social media screenshot. Focus ONLY on the primary like button/icon (e.g., heart, thumb up) associated with the main post content. Determine if this like button is in an 'activated' or 'liked' state. Respond with ONLY the single digit '1' if the post appears to be liked. Respond with ONLY the single digit '0' if the post appears to be *not* liked. Do not provide any other text, explanation, or formatting."""
+LIKE_DETECTION_PROMPT = """Analyze this social media screenshot, paying close attention to platforms like TikTok.
+Focus ONLY on the primary like button/icon (e.g., a heart on TikTok/Instagram, a thumb-up on Facebook/YouTube) associated with the main post content.
+Determine if this like button is in an 'activated', 'pressed', or 'liked' state.
+A 'liked' state is typically indicated by a VISUAL CHANGE:
+- For a heart icon (common on TikTok): It should be FILLED (often with red or another distinct color), not just an outline. An unliked heart is usually an outline or greyed out.
+- For a thumb-up icon: It might be FILLED (e.g., blue), highlighted, or have a distinct color change compared to its unliked state (which is often an outline or greyed out).
+
+Respond with ONLY the single digit '1' if the like button clearly appears to be in this 'liked'/'activated'/'pressed' state.
+Respond with ONLY the single digit '0' if the like button clearly appears to be in an *unliked*/*inactive*/*unpressed* state (e.g., an outline, not filled, greyed out).
+Do not provide any other text, explanation, or formatting."""
+
 COMMENT_DETECTION_PROMPT = """Analyze this social media screenshot (like TikTok, Instagram, Facebook). Search the visible comments section carefully for any comment posted by the username '{username}'. Pay close attention to the username associated with each comment. Respond with ONLY the single digit '1' if a comment clearly posted by the exact username '{username}' is visible in the screenshot. Respond with ONLY the single digit '0' if no comment by this exact username is clearly visible. Do not provide any other text, explanation, or formatting."""
 SHARE_DETECTION_PROMPT = """Analyze this social media screenshot (like TikTok, Instagram, Facebook). Focus ONLY on the share button/icon (e.g., arrow, paper plane) or any text indicating a share action related to the main post. Determine if the post appears to have been shared by the user who took the screenshot (look for a highlighted or altered share icon, or text like 'Shared'). Respond with ONLY the single digit '1' if the post appears to have been shared. Respond with ONLY the single digit '0' if the post does not appear to have been shared. Do not provide any other text, explanation, or formatting."""
 SUBSCRIBE_DETECTION_PROMPT = """Analyze this social media screenshot (e.g., YouTube, Twitch, etc.). Focus ONLY on the primary subscribe button/icon or text indicating subscription status to the channel/creator featured in the screenshot. Determine if the user who took the screenshot appears to be subscribed to this channel/creator (look for a button that says 'Subscribed', 'Unsubscribe', a highlighted bell icon next to a subscribe button, or similar indicators of an active subscription). Respond with ONLY the single digit '1' if the user appears to be subscribed. Respond with ONLY the single digit '0' if the user appears to be *not* subscribed (e.g., button says 'Subscribe'). Do not provide any other text, explanation, or formatting."""
