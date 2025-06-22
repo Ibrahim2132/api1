@@ -19,8 +19,8 @@ load_dotenv()
 print("Attempting to load environment variables...") # Debug print
 
 # --- تحديد المسارات ---
-persistent_data_dir = '/tmp' # أو المسار المناسب لبيئتك
-db_path = os.path.join(persistent_data_dir, 'databases4.db')
+persistent_data_dir = '/tmp' # أو المسار المناسب لبيئتك (للإنتاج، استخدم مسار دائم)
+db_path = os.path.join(persistent_data_dir, 'databases5.db') # تم تغيير اسم قاعدة البيانات لضمان إنشاء جديد إذا لزم الأمر
 UPLOAD_FOLDER = os.path.join(persistent_data_dir, 'uploads')
 db_dir = os.path.dirname(db_path) # مجلد قاعدة البيانات
 
@@ -56,7 +56,7 @@ else:
     try:
         print("Configuring Gemini API...")
         genai.configure(api_key=GOOGLE_API_KEY)
-        gemini_model = genai.GenerativeModel('gemini-2.0-flash') # تم التغيير إلى فلاش الأحدث
+        gemini_model = genai.GenerativeModel('gemini-1.5-flash') # تم التغيير إلى فلاش الأحدث
         print("Gemini Model configured successfully.")
     except Exception as e:
         print(f"ERROR configuring Gemini API: {e}. Image analysis will be disabled.")
@@ -84,7 +84,46 @@ SUBSCRIBE_DETECTION_PROMPT = """Analyze this social media screenshot (e.g., YouT
 processed_image_hashes = set()
 print(f"Initialized empty set for processed_image_hashes (user_id, image_hash). Size: {len(processed_image_hashes)}")
 
+# --- قيم العملات للمهام ---
+COIN_VALUES = {
+    "like": 5,
+    "comment": 7,
+    "share": 10,
+    "subscribe": 12
+}
+POSSIBLE_ACTION_TYPES = set(COIN_VALUES.keys())
 
+# --- (أعلى الملف مع بقية تعريفات الموديلات) ---
+
+# ... (موديل User و Advertisement و UserAdAction كما هي) ...
+
+class CoinPackage(db.Model):
+    __tablename__ = 'coin_package'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False, unique=True) # اسم الباقة، مثال: "باقة 1000 عملة"
+    amount = db.Column(db.Integer, nullable=False) # عدد العملات في الباقة
+    price_usd = db.Column(db.Float, nullable=True) # السعر بالدولار الأمريكي (أو عملتك المفضلة) - اجعله True إذا كان السعر اختياريًا
+    description = db.Column(db.Text, nullable=True)
+    is_active = db.Column(db.Boolean, nullable=False, default=True) # هل الباقة متاحة حاليًا
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "amount": self.amount,
+            "price_usd": self.price_usd,
+            "description": self.description,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+    def __repr__(self):
+        return f'<CoinPackage {self.id} - {self.name} ({self.amount} coins)>'
+
+# --- (بعد تعريف الموديل، وقبل db.create_all() إذا كنت ستشغلها يدويًا) ---
 # --- تعريف موديل المستخدم (User Model) ---
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -98,6 +137,8 @@ class User(db.Model):
     referred_by_me_ids = db.Column(db.Text, nullable=True)
     last_spin_time = db.Column(db.DateTime, nullable=True)
     advertisements = db.relationship('Advertisement', backref='advertiser', lazy=True, order_by="Advertisement.created_at.desc()")
+    # علاقة جديدة مع UserAdAction
+    # ad_actions = db.relationship('UserAdAction', backref='user', lazy='dynamic') # تم تعريفها في UserAdAction
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -165,9 +206,6 @@ class User(db.Model):
     def __repr__(self):
         return f'<User {self.id} - {self.name} ({self.email}) - Coins: {self.coins}>'
 
-
-# --- موديل الإعلانات (Advertisement Model) ---
-# --- موديل الإعلانات (Advertisement Model) ---
 class Advertisement(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True) # صاحب الإعلان
@@ -175,16 +213,17 @@ class Advertisement(db.Model):
     description = db.Column(db.Text, nullable=True)
     link = db.Column(db.Text, nullable=False)
     interests = db.Column(db.Text, nullable=True)
-    number_of_clicks = db.Column(db.Integer, nullable=False, default=0)
-    coin_per_click = db.Column(db.Integer, nullable=False)
+    number_of_clicks = db.Column(db.Integer, nullable=False, default=0) # نقرات على الرابط
+    coin_per_click = db.Column(db.Integer, nullable=False) # عملات لصاحب الإعلان عن كل نقرة على الرابط
     category = db.Column(db.String(80), nullable=True, index=True)
     subcategory = db.Column(db.String(80), nullable=True)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = db.Column(db.Boolean, nullable=False, default=True)
     is_approved = db.Column(db.Boolean, nullable=False, default=False, index=True)
-    # --- الإضافة الجديدة ---
-    clicked_by_user_ids = db.Column(db.Text, nullable=True) # سيخزن قائمة IDs كـ JSON
+    clicked_by_user_ids = db.Column(db.Text, nullable=True) # مستخدمون نقروا على الرابط
+    # علاقة جديدة مع UserAdAction
+    # user_actions = db.relationship('UserAdAction', backref='advertisement', lazy='dynamic') # تم تعريفها في UserAdAction
 
     def set_interests(self, interests_list):
         if interests_list and isinstance(interests_list, list):
@@ -206,7 +245,6 @@ class Advertisement(db.Model):
                 return []
         return []
 
-    # --- الدوال الجديدة لـ clicked_by_user_ids ---
     def set_clicked_by_user_ids(self, id_list):
         if id_list and isinstance(id_list, list):
             if all(isinstance(item, int) for item in id_list):
@@ -215,7 +253,7 @@ class Advertisement(db.Model):
                 app.logger.warning(f"Ad {self.id}: clicked_by_user_ids list contains non-integer elements. Setting to empty list.")
                 self.clicked_by_user_ids = json.dumps([])
         else:
-            self.clicked_by_user_ids = json.dumps([]) # الافتراضي قائمة فارغة
+            self.clicked_by_user_ids = json.dumps([])
 
     def get_clicked_by_user_ids(self):
         if self.clicked_by_user_ids:
@@ -230,7 +268,7 @@ class Advertisement(db.Model):
     def to_dict(self):
         return {
             "id": self.id,
-            "user_id": self.user_id, # صاحب الإعلان
+            "user_id": self.user_id,
             "title": self.title,
             "description": self.description,
             "link": self.link,
@@ -243,11 +281,31 @@ class Advertisement(db.Model):
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "is_active": self.is_active,
             "is_approved": self.is_approved,
-            "clicked_by_user_ids": self.get_clicked_by_user_ids() # إضافة الحقل الجديد
+            "clicked_by_user_ids": self.get_clicked_by_user_ids()
         }
 
     def __repr__(self):
         return f'<Advertisement {self.id} - {self.title} by User {self.user_id}>'
+
+
+# --- موديل UserAdAction الجديد ---
+class UserAdAction(db.Model):
+    __tablename__ = 'user_ad_action'
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    advertisement_id = db.Column(db.Integer, db.ForeignKey('advertisement.id'), nullable=False, index=True)
+    action_type = db.Column(db.String(50), nullable=False, index=True) # e.g., 'like', 'comment', 'share', 'subscribe'
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+    # لضمان عدم تكرار نفس الإجراء من نفس المستخدم على نفس الإعلان
+    __table_args__ = (db.UniqueConstraint('user_id', 'advertisement_id', 'action_type', name='uq_user_ad_action'),)
+
+    user = db.relationship('User', backref=db.backref('ad_actions', lazy='dynamic'))
+    advertisement = db.relationship('Advertisement', backref=db.backref('user_actions', lazy='dynamic'))
+
+    def __repr__(self):
+        return f'<UserAdAction User {self.user_id} {self.action_type} Ad {self.advertisement_id}>'
+
 
 # --- تهيئة قاعدة البيانات ---
 try:
@@ -264,30 +322,26 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-# --- نقاط النهاية (API Endpoints) ---
-
 # --- START: Helper function to get user_id and validate user ---
 def get_validated_user_from_form(form_data):
-    """
-    Helper function to get user_id from form data, validate it,
-    and return the User object or an error response.
-    """
     if 'user_id' not in form_data:
         app.logger.warning("Missing 'user_id' in form data.")
         return None, (jsonify({"error": "Missing 'user_id' form field in the request."}), 400)
     user_id_str = form_data.get('user_id')
     try:
-        user_id = int(user_id_str)
+        user_id_val = int(user_id_str)
     except (ValueError, TypeError):
         app.logger.warning(f"Invalid user_id format: {user_id_str}")
         return None, (jsonify({"error": "'user_id' must be a valid integer."}), 400)
 
-    user = User.query.get(user_id)
+    user = User.query.get(user_id_val)
     if not user:
-        app.logger.warning(f"User with ID {user_id} not found.")
-        return None, (jsonify({"error": f"User with ID {user_id} not found."}), 404)
+        app.logger.warning(f"User with ID {user_id_val} not found.")
+        return None, (jsonify({"error": f"User with ID {user_id_val} not found."}), 404)
     return user, None
 # --- END: Helper function ---
+
+# --- نقاط النهاية (API Endpoints) ---
 
 @app.route('/register', methods=['POST'])
 def register():
@@ -356,8 +410,8 @@ def login():
     if user is None or not user.check_password(password): return jsonify({"error": "Invalid email or password"}), 401
     return jsonify({"message": "Login successful!", "user": user.to_dict()}), 200
 
-@app.route('/users/<int:user_id>/spin_wheel', methods=['POST'])
-def spin_wheel(user_id_param): # Renamed to avoid conflict with user_id from form
+@app.route('/users/<int:user_id_param>/spin_wheel', methods=['POST'])
+def spin_wheel(user_id_param): 
     user = User.query.get(user_id_param)
     if user is None: return jsonify({"error": f"User with ID {user_id_param} not found"}), 404
     now = datetime.utcnow()
@@ -372,12 +426,12 @@ def spin_wheel(user_id_param): # Renamed to avoid conflict with user_id from for
         remaining_time = cooldown_period - (now - user.last_spin_time)
         remaining_seconds = int(remaining_time.total_seconds())
         hours, remainder = divmod(remaining_seconds, 3600)
-        minutes, seconds_val = divmod(remainder, 60) # Renamed seconds to seconds_val
+        minutes, seconds_val = divmod(remainder, 60)
         remaining_time_str = f"{hours}h {minutes}m {seconds_val}s"
 
     if can_spin:
         try:
-            # prize_coins = random.randint(10, 50) # Example
+            # prize_coins = random.randint(10, 50) # Example: Implement actual prize logic
             # user.coins += prize_coins
             user.last_spin_time = now
             db.session.commit()
@@ -385,7 +439,7 @@ def spin_wheel(user_id_param): # Renamed to avoid conflict with user_id from for
             return jsonify({
                 "status": 1,
                 "message": "Spin successful! You can spin again in 24 hours.",
-                "new_coins_balance": user.coins
+                "new_coins_balance": user.coins # Ensure this reflects any prize coins awarded
             }), 200
         except Exception as e:
             db.session.rollback()
@@ -423,7 +477,7 @@ def get_user_profile(user_id):
         app.logger.error(f"Error generating profile for user {user_id}: {e}", exc_info=True)
         return jsonify({"error": "Internal Server Error generating profile"}), 500
 
-@app.route('/users/<int:user_id_param>/interests', methods=['PUT']) # Renamed user_id
+@app.route('/users/<int:user_id_param>/interests', methods=['PUT'])
 def update_user_interests(user_id_param):
     if not request.is_json: return jsonify({"error": "Request must be JSON"}), 400
     user = User.query.get(user_id_param)
@@ -446,7 +500,7 @@ def update_user_interests(user_id_param):
 def add_advertisement():
     if not request.is_json: return jsonify({"error": "Request must be JSON"}), 400
     data = request.get_json()
-    user_id_from_data = data.get('user_id') # Renamed to avoid conflict
+    user_id_from_data = data.get('user_id')
     if user_id_from_data is None: return jsonify({"error": "Missing 'user_id' field"}), 400
     
     user = User.query.get(user_id_from_data)
@@ -501,54 +555,47 @@ def reject_and_delete_advertisement(ad_id):
     if advertisement is None:
         return jsonify({"error": f"Ad ID {ad_id} not found"}), 404
     try:
+        # قبل الحذف، قد ترغب في حذف الإجراءات المرتبطة به من UserAdAction
+        UserAdAction.query.filter_by(advertisement_id=ad_id).delete()
         db.session.delete(advertisement)
         db.session.commit()
-        app.logger.info(f"Admin: Ad {ad_id} rejected and deleted.")
+        app.logger.info(f"Admin: Ad {ad_id} and its actions rejected and deleted.")
         return jsonify({"message": f"Advertisement {ad_id} rejected and deleted."}), 200
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Error rejecting ad {ad_id}: {e}", exc_info=True)
         return jsonify({"error": "Internal Server Error"}), 500
-# ... (الكود السابق) ...
 
 @app.route('/admin/advertisements/force_delete/<int:ad_id>', methods=['DELETE'])
 def force_delete_advertisement(ad_id):
-    """
-    نقطة نهاية لحذف إعلان معين بالقوة بدون التحقق من الملكية.
-    !!! تحذير: هذه نقطة نهاية خطيرة ويجب تأمينها أو استخدامها بحذر شديد !!!
-    """
+    # !! Add Admin Auth Check Here !!
     app.logger.warning(f"Executing FORCE DELETE for advertisement ID: {ad_id}. This is a high-privilege operation.")
-
     advertisement = Advertisement.query.get(ad_id)
-
     if advertisement is None:
         app.logger.warning(f"FORCE DELETE failed: Advertisement with ID {ad_id} not found.")
         return jsonify({"error": f"Advertisement with ID {ad_id} not found"}), 404
-
     try:
+        UserAdAction.query.filter_by(advertisement_id=ad_id).delete() # حذف الإجراءات المرتبطة
         db.session.delete(advertisement)
         db.session.commit()
-        app.logger.info(f"Advertisement {ad_id} was FORCE DELETED successfully.")
+        app.logger.info(f"Advertisement {ad_id} and its actions were FORCE DELETED successfully.")
         return jsonify({"message": f"Advertisement {ad_id} force deleted successfully"}), 200
     except Exception as e:
         db.session.rollback()
         app.logger.error(f"Error during FORCE DELETE of advertisement {ad_id}: {e}", exc_info=True)
         return jsonify({"error": "Internal Server Error during force deletion"}), 500
 
-# ... (باقي الكود) ...
 @app.route('/advertisements', methods=['GET'])
-def get_advertisements_filtered():
+def get_advertisements_filtered(): # نقطة نهاية عامة لفلترة الإعلانات (يمكن استخدامها من قبل المشرفين مثلاً)
     try:
         query = Advertisement.query
         if request.args.get('user_id'): query = query.filter(Advertisement.user_id == int(request.args.get('user_id')))
         if request.args.get('category'): query = query.filter(Advertisement.category == request.args.get('category'))
-        # ... (Add other filters as in original code) ...
         if request.args.get('is_approved'):
             is_approved_filter = request.args.get('is_approved').lower()
             if is_approved_filter == 'true': query = query.filter(Advertisement.is_approved == True)
             elif is_approved_filter == 'false': query = query.filter(Advertisement.is_approved == False)
         
-        # Simplified for brevity, add all original filters back
         filtered_ads = query.order_by(Advertisement.created_at.desc()).all()
         return jsonify([ad.to_dict() for ad in filtered_ads]), 200
     except ValueError as ve:
@@ -557,22 +604,11 @@ def get_advertisements_filtered():
         app.logger.error(f"Error fetching/filtering ads: {e}", exc_info=True)
         return jsonify({"error": "Internal Server Error"}), 500
 
-@app.route('/advertisements/approved', methods=['GET'])
-def get_approved_advertisements():
-    try:
-        approved_ads = Advertisement.query.filter_by(is_approved=True, is_active=True)\
-                                          .order_by(Advertisement.created_at.desc()).all()
-        return jsonify([ad.to_dict() for ad in approved_ads]), 200
-    except Exception as e:
-        app.logger.error(f"Error fetching approved ads: {e}", exc_info=True)
-        return jsonify({"error": "Internal Server Error"}), 500
-
-@app.route('/users/<int:user_id_param>/advertisements', methods=['GET']) # Renamed user_id
-def get_user_advertisements(user_id_param):
+@app.route('/users/<int:user_id_param>/advertisements', methods=['GET'])
+def get_user_advertisements(user_id_param): # إعلانات أنشأها المستخدم
     user = User.query.get(user_id_param)
     if user is None: return jsonify({"error": f"User ID {user_id_param} not found"}), 404
     try:
-        # user_ads = user.advertisements # Using relationship
         user_ads = Advertisement.query.filter_by(user_id=user_id_param)\
                                      .order_by(Advertisement.created_at.desc()).all()
         return jsonify([ad.to_dict() for ad in user_ads]), 200
@@ -580,246 +616,214 @@ def get_user_advertisements(user_id_param):
         app.logger.error(f"Error fetching ads for user {user_id_param}: {e}", exc_info=True)
         return jsonify({"error": "Internal Server Error"}), 500
 
+
+# --- نقطة نهاية جديدة لجلب الإعلانات المتاحة للمستخدم مع المهام ---
+@app.route('/advertisements/available_for_user/<int:requesting_user_id>', methods=['GET'])
+def get_available_ads_for_user(requesting_user_id):
+    user = User.query.get(requesting_user_id)
+    if not user:
+        return jsonify({"error": f"User with ID {requesting_user_id} not found."}), 404
+
+    try:
+        actions_done_by_user_raw = db.session.query(
+                                        UserAdAction.advertisement_id, 
+                                        UserAdAction.action_type
+                                     )\
+                                     .filter(UserAdAction.user_id == requesting_user_id)\
+                                     .all()
+        
+        interacted_ads_actions = {}
+        for ad_id_val, action_type_val in actions_done_by_user_raw:
+            if ad_id_val not in interacted_ads_actions:
+                interacted_ads_actions[ad_id_val] = set()
+            interacted_ads_actions[ad_id_val].add(action_type_val)
+
+        app.logger.debug(f"User {requesting_user_id} has interacted with ads and actions: {interacted_ads_actions}")
+
+        query = Advertisement.query.filter(
+            Advertisement.is_approved == True,
+            Advertisement.is_active == True
+        )
+        
+        # فلترة بالاهتمامات (مثال بسيط)
+        user_interests = user.get_interests()
+        if user_interests:
+            # هذا يتطلب أن يكون Advertisement.interests هو JSON array of strings
+            # وقد يكون أبطأ مع SQLite لقواعد البيانات الكبيرة
+            # for interest in user_interests:
+            # query = query.filter(Advertisement.interests.contains(interest)) # Requires specific DB setup for JSON search
+            # حل أبسط: الفلترة بعد الجلب إذا كانت القائمة ليست ضخمة جدًا
+            pass
+
+
+        all_potential_ads = query.order_by(Advertisement.created_at.desc()).all()
+        
+        available_ads_with_tasks = []
+
+        for ad in all_potential_ads:
+            # فلترة بالاهتمامات (بعد الجلب) - إذا لم يتم تطبيقها في الاستعلام
+            # ad_interests = ad.get_interests()
+            # if user_interests and ad_interests and not any(i in ad_interests for i in user_interests):
+            # continue # تخطي الإعلان إذا لم يكن هناك اهتمامات مشتركة
+
+            remaining_tasks_for_ad = list(POSSIBLE_ACTION_TYPES - interacted_ads_actions.get(ad.id, set()))
+            
+            if remaining_tasks_for_ad:
+                ad_data = ad.to_dict()
+                ad_data['available_tasks'] = sorted(list(remaining_tasks_for_ad)) # ضمان ترتيب ثابت
+                available_ads_with_tasks.append(ad_data)
+        
+        app.logger.info(f"Found {len(available_ads_with_tasks)} ads with available tasks for user {requesting_user_id} after filtering.")
+        return jsonify(available_ads_with_tasks), 200
+
+    except Exception as e:
+        app.logger.error(f"Error fetching available ads for user {requesting_user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error"}), 500
+
+
 # --- Image Analysis Endpoints (MODIFIED) ---
+
+def _analyze_social_action(action_type_constant, specific_prompt, request_data, request_files):
+    """Helper function to reduce redundancy in analysis endpoints."""
+    if not gemini_model:
+        app.logger.warning(f"Gemini model N/A for {action_type_constant} analysis.")
+        return jsonify({"error": "Image analysis service unavailable."}), 503
+
+    user, error_response = get_validated_user_from_form(request_data)
+    if error_response: return error_response
+    user_id_val = user.id
+
+    if 'advertisement_id' not in request_data:
+        app.logger.warning(f"User {user_id_val}: Missing 'advertisement_id' in form for {action_type_constant} analysis.")
+        return jsonify({"error": "Missing 'advertisement_id' form field."}), 400
+    try:
+        advertisement_id_val = int(request_data.get('advertisement_id'))
+    except (ValueError, TypeError):
+        app.logger.warning(f"User {user_id_val}: Invalid advertisement_id format: {request_data.get('advertisement_id')}")
+        return jsonify({"error": "'advertisement_id' must be a valid integer."}), 400
+
+    advertisement = Advertisement.query.get(advertisement_id_val)
+    if not advertisement:
+        app.logger.warning(f"User {user_id_val}: Advertisement with ID {advertisement_id_val} not found for {action_type_constant} analysis.")
+        return jsonify({"error": f"Advertisement with ID {advertisement_id_val} not found."}), 404
+
+    if 'image' not in request_files: return jsonify({"error": "Missing 'image' file part."}), 400
+    file = request_files['image']
+    if file.filename == '': return jsonify({"error": "No file selected."}), 400
+
+    try:
+        img_bytes = file.read()
+        if not img_bytes: return jsonify({"error": "Empty image file."}), 400
+        img_hash = hashlib.sha256(img_bytes).hexdigest()
+    except Exception as e:
+        app.logger.error(f"User {user_id_val}: Img hash error ({action_type_constant}): {e}", exc_info=True)
+        return jsonify({"error": "Could not process image file."}), 400
+
+    image_user_pair = (user_id_val, img_hash)
+    if image_user_pair in processed_image_hashes:
+        app.logger.warning(f"User {user_id_val}: Duplicate img for {action_type_constant} (hash {img_hash}) Ad {advertisement_id_val}")
+        return jsonify({"status": -1, "message": "Image already processed by you for a task."}), 200
+
+    existing_action = UserAdAction.query.filter_by(
+        user_id=user_id_val,
+        advertisement_id=advertisement_id_val,
+        action_type=action_type_constant
+    ).first()
+    if existing_action:
+        app.logger.warning(f"User {user_id_val} already performed '{action_type_constant}' on Ad {advertisement_id_val}.")
+        return jsonify({"status": -2, "message": f"You have already performed this '{action_type_constant}' action on this advertisement."}), 200
+
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img.verify()
+        img = Image.open(io.BytesIO(img_bytes))
+    except Exception as e:
+        app.logger.error(f"User {user_id_val}: Invalid img ({action_type_constant}, hash {img_hash}) Ad {advertisement_id_val}: {e}", exc_info=True)
+        return jsonify({"error": "Invalid or corrupted image."}), 400
+
+    try:
+        app.logger.info(f"User {user_id_val}: Sending img {img_hash} to Gemini ({action_type_constant}) for Ad {advertisement_id_val}...")
+        final_prompt = specific_prompt
+        if action_type_constant == "comment": # خاص بالتعليق، يحتاج لاسم المستخدم
+            if 'username' not in request_data:
+                 app.logger.warning(f"User {user_id_val}: Missing 'username' for comment analysis, Ad {advertisement_id_val}.")
+                 return jsonify({"error": "Missing 'username' form field for comment analysis."}), 400
+            username = request_data['username']
+            if not username:
+                app.logger.warning(f"User {user_id_val}: Empty 'username' for comment analysis, Ad {advertisement_id_val}.")
+                return jsonify({"error": "'username' cannot be empty for comment analysis."}), 400
+            final_prompt = specific_prompt.format(username=username)
+            app.logger.info(f"User {user_id_val}: Using comment prompt for user '{username}'")
+
+
+        response = gemini_model.generate_content([final_prompt, img])
+        if response.parts:
+            raw_result = response.text.strip()
+            app.logger.info(f"User {user_id_val}: Gemini {action_type_constant} raw_result for {img_hash} Ad {advertisement_id_val}: '{raw_result}'")
+            if raw_result == "1":
+                processed_image_hashes.add(image_user_pair)
+                app.logger.info(f"User {user_id_val}: Pair {image_user_pair} added for {action_type_constant}. Set size: {len(processed_image_hashes)}")
+                
+                new_action_obj = UserAdAction(
+                    user_id=user_id_val,
+                    advertisement_id=advertisement_id_val,
+                    action_type=action_type_constant
+                )
+                db.session.add(new_action_obj)
+                
+                coins_to_award = COIN_VALUES.get(action_type_constant, 0)
+                user.coins += coins_to_award
+                app.logger.info(f"User {user_id_val} awarded {coins_to_award} coins for {action_type_constant} on Ad {advertisement_id_val}. Action prepared. New balance: {user.coins}")
+
+                try:
+                    db.session.commit()
+                    app.logger.info(f"User {user_id_val}: Action '{action_type_constant}' for Ad {advertisement_id_val} and coin update committed.")
+                except Exception as commit_ex:
+                    db.session.rollback()
+                    app.logger.error(f"User {user_id_val}: CRITICAL: Commit failed for {action_type_constant} Ad {advertisement_id_val} after Gemini success: {commit_ex}", exc_info=True)
+                    processed_image_hashes.discard(image_user_pair) # محاولة التراجع عن إضافة الهاش إذا فشل الـ commit
+                    return jsonify({"error": "Failed to record action due to a server error. Please try again."}), 500
+
+                return jsonify({"status": int(raw_result), "message": f"{action_type_constant.capitalize()} analysis complete. Action logged and {coins_to_award} coins awarded."}), 200
+            elif raw_result == "0":
+                 return jsonify({"status": int(raw_result), "message": f"{action_type_constant.capitalize()} analysis complete. Action not detected."}), 200
+            else:
+                app.logger.error(f"User {user_id_val}: Unexpected Gemini ({action_type_constant}) for {img_hash} Ad {advertisement_id_val}: '{raw_result}'")
+                return jsonify({"error": f"Unexpected analysis result: '{raw_result}'"}), 500
+        else:
+            feedback = response.prompt_feedback if hasattr(response, 'prompt_feedback') else 'N/A'
+            app.logger.error(f"User {user_id_val}: Gemini no content ({action_type_constant}) for {img_hash} Ad {advertisement_id_val}. Feedback: {feedback}")
+            # إذا كان هناك حظر محتوى، قد لا نرغب في إضافة الهاش
+            # processed_image_hashes.add(image_user_pair) # فكر في هذا السطر
+            return jsonify({"error": "Analysis failed or content blocked by safety filters."}), 500
+    except Exception as e:
+        app.logger.error(f"User {user_id_val}: Gemini API error ({action_type_constant}) for {img_hash} Ad {advertisement_id_val}: {e}", exc_info=True)
+        return jsonify({"error": f"Image analysis error: {str(e)}"}), 500
 
 @app.route('/analyze_like_status', methods=['POST'])
 def analyze_like_status():
-    if not gemini_model:
-        app.logger.warning("Gemini model N/A for like analysis.")
-        return jsonify({"error": "Image analysis service unavailable."}), 503
-
-    user, error_response = get_validated_user_from_form(request.form)
-    if error_response: return error_response
-    user_id = user.id # Get user_id from the validated user object
-
-    if 'image' not in request.files: return jsonify({"error": "Missing 'image' file part."}), 400
-    file = request.files['image']
-    if file.filename == '': return jsonify({"error": "No file selected."}), 400
-
-    try:
-        img_bytes = file.read()
-        if not img_bytes: return jsonify({"error": "Empty image file."}), 400
-        img_hash = hashlib.sha256(img_bytes).hexdigest()
-    except Exception as e:
-        app.logger.error(f"User {user_id}: Img hash error: {e}", exc_info=True)
-        return jsonify({"error": "Could not process image file."}), 400
-
-    image_user_pair = (user_id, img_hash)
-    if image_user_pair in processed_image_hashes:
-        app.logger.warning(f"User {user_id}: Duplicate img for like: {img_hash}")
-        return jsonify({"status": -1, "message": "Image already processed by you."}), 200
-
-    try:
-        img = Image.open(io.BytesIO(img_bytes))
-        img.verify()
-        img = Image.open(io.BytesIO(img_bytes)) # Re-open
-    except Exception as e:
-        app.logger.error(f"User {user_id}: Invalid img (hash {img_hash}): {e}", exc_info=True)
-        return jsonify({"error": "Invalid or corrupted image."}), 400
-
-    try:
-        app.logger.info(f"User {user_id}: Sending img {img_hash} to Gemini (like)...")
-        response = gemini_model.generate_content([LIKE_DETECTION_PROMPT, img])
-        if response.parts:
-            raw_result = response.text.strip()
-            app.logger.info(f"User {user_id}: Gemini like raw_result for {img_hash}: '{raw_result}'")
-            if raw_result in ["1", "0"]:
-                processed_image_hashes.add(image_user_pair)
-                app.logger.info(f"User {user_id}: Pair {image_user_pair} added. Set size: {len(processed_image_hashes)}")
-                # Potentially award coins here if raw_result == "1" and task is valid
-                # Example: if raw_result == "1": user.coins += 1; db.session.commit()
-                return jsonify({"status": int(raw_result), "message": "Analysis complete."}), 200
-            else:
-                app.logger.error(f"User {user_id}: Unexpected Gemini (like) for {img_hash}: '{raw_result}'")
-                return jsonify({"error": f"Unexpected analysis result: '{raw_result}'"}), 500
-        else:
-            feedback = response.prompt_feedback if hasattr(response, 'prompt_feedback') else 'N/A'
-            app.logger.error(f"User {user_id}: Gemini no content (like) for {img_hash}. Feedback: {feedback}")
-            return jsonify({"error": "Analysis failed or content blocked."}), 500
-    except Exception as e:
-        app.logger.error(f"User {user_id}: Gemini API error (like) for {img_hash}: {e}", exc_info=True)
-        return jsonify({"error": f"Image analysis error: {str(e)}"}), 500
+    return _analyze_social_action("like", LIKE_DETECTION_PROMPT, request.form, request.files)
 
 @app.route('/analyze_comment_status', methods=['POST'])
 def analyze_comment_status():
-    if not gemini_model:
-        app.logger.warning("Gemini model N/A for comment analysis.")
-        return jsonify({"error": "Image analysis service unavailable."}), 503
-
-    user, error_response = get_validated_user_from_form(request.form)
-    if error_response: return error_response
-    user_id = user.id
-
-    if 'username' not in request.form: return jsonify({"error": "Missing 'username' form field."}), 400
-    username = request.form['username']
-    if not username: return jsonify({"error": "'username' cannot be empty."}), 400
-
-    if 'image' not in request.files: return jsonify({"error": "Missing 'image' file part."}), 400
-    file = request.files['image']
-    if file.filename == '': return jsonify({"error": "No file selected."}), 400
-
-    try:
-        img_bytes = file.read()
-        if not img_bytes: return jsonify({"error": "Empty image file."}), 400
-        img_hash = hashlib.sha256(img_bytes).hexdigest()
-    except Exception as e:
-        app.logger.error(f"User {user_id}: Img hash error (comment): {e}", exc_info=True)
-        return jsonify({"error": "Could not process image file."}), 400
-
-    image_user_pair = (user_id, img_hash)
-    if image_user_pair in processed_image_hashes:
-        app.logger.warning(f"User {user_id}: Duplicate img for comment: {img_hash}")
-        return jsonify({"status": -1, "message": "Image already processed by you."}), 200
-    
-    try:
-        img = Image.open(io.BytesIO(img_bytes))
-        img.verify()
-        img = Image.open(io.BytesIO(img_bytes))
-    except Exception as e:
-        app.logger.error(f"User {user_id}: Invalid img (comment, hash {img_hash}): {e}", exc_info=True)
-        return jsonify({"error": "Invalid or corrupted image."}), 400
-
-    try:
-        comment_prompt = COMMENT_DETECTION_PROMPT.format(username=username)
-        app.logger.info(f"User {user_id}: Sending img {img_hash} to Gemini (comment for '{username}')...")
-        response = gemini_model.generate_content([comment_prompt, img])
-        if response.parts:
-            raw_result = response.text.strip()
-            app.logger.info(f"User {user_id}: Gemini comment raw_result for {img_hash} ('{username}'): '{raw_result}'")
-            if raw_result in ["1", "0"]:
-                processed_image_hashes.add(image_user_pair)
-                app.logger.info(f"User {user_id}: Pair {image_user_pair} added. Set size: {len(processed_image_hashes)}")
-                # Potentially award coins
-                return jsonify({"status": int(raw_result), "message": f"Comment analysis for '{username}' complete."}), 200
-            else:
-                app.logger.error(f"User {user_id}: Unexpected Gemini (comment) for {img_hash}: '{raw_result}'")
-                return jsonify({"error": f"Unexpected analysis result: '{raw_result}'"}), 500
-        else:
-            feedback = response.prompt_feedback if hasattr(response, 'prompt_feedback') else 'N/A'
-            app.logger.error(f"User {user_id}: Gemini no content (comment) for {img_hash}. Feedback: {feedback}")
-            return jsonify({"error": "Analysis failed or content blocked."}), 500
-    except Exception as e:
-        app.logger.error(f"User {user_id}: Gemini API error (comment) for {img_hash}: {e}", exc_info=True)
-        return jsonify({"error": f"Image analysis error: {str(e)}"}), 500
+    return _analyze_social_action("comment", COMMENT_DETECTION_PROMPT, request.form, request.files)
 
 @app.route('/analyze_share_status', methods=['POST'])
 def analyze_share_status():
-    if not gemini_model:
-        app.logger.warning("Gemini model N/A for share analysis.")
-        return jsonify({"error": "Image analysis service unavailable."}), 503
-
-    user, error_response = get_validated_user_from_form(request.form)
-    if error_response: return error_response
-    user_id = user.id
-
-    if 'image' not in request.files: return jsonify({"error": "Missing 'image' file part."}), 400
-    file = request.files['image']
-    if file.filename == '': return jsonify({"error": "No file selected."}), 400
-
-    try:
-        img_bytes = file.read()
-        if not img_bytes: return jsonify({"error": "Empty image file."}), 400
-        img_hash = hashlib.sha256(img_bytes).hexdigest()
-    except Exception as e:
-        app.logger.error(f"User {user_id}: Img hash error (share): {e}", exc_info=True)
-        return jsonify({"error": "Could not process image file."}), 400
-
-    image_user_pair = (user_id, img_hash)
-    if image_user_pair in processed_image_hashes:
-        app.logger.warning(f"User {user_id}: Duplicate img for share: {img_hash}")
-        return jsonify({"status": -1, "message": "Image already processed by you."}), 200
-
-    try:
-        img = Image.open(io.BytesIO(img_bytes))
-        img.verify()
-        img = Image.open(io.BytesIO(img_bytes))
-    except Exception as e:
-        app.logger.error(f"User {user_id}: Invalid img (share, hash {img_hash}): {e}", exc_info=True)
-        return jsonify({"error": "Invalid or corrupted image."}), 400
-
-    try:
-        app.logger.info(f"User {user_id}: Sending img {img_hash} to Gemini (share)...")
-        response = gemini_model.generate_content([SHARE_DETECTION_PROMPT, img])
-        if response.parts:
-            raw_result = response.text.strip()
-            app.logger.info(f"User {user_id}: Gemini share raw_result for {img_hash}: '{raw_result}'")
-            if raw_result in ["1", "0"]:
-                processed_image_hashes.add(image_user_pair)
-                app.logger.info(f"User {user_id}: Pair {image_user_pair} added. Set size: {len(processed_image_hashes)}")
-                return jsonify({"status": int(raw_result), "message": "Share analysis complete."}), 200
-            else:
-                app.logger.error(f"User {user_id}: Unexpected Gemini (share) for {img_hash}: '{raw_result}'")
-                return jsonify({"error": f"Unexpected analysis result: '{raw_result}'"}), 500
-        else:
-            feedback = response.prompt_feedback if hasattr(response, 'prompt_feedback') else 'N/A'
-            app.logger.error(f"User {user_id}: Gemini no content (share) for {img_hash}. Feedback: {feedback}")
-            return jsonify({"error": "Analysis failed or content blocked."}), 500
-    except Exception as e:
-        app.logger.error(f"User {user_id}: Gemini API error (share) for {img_hash}: {e}", exc_info=True)
-        return jsonify({"error": f"Image analysis error: {str(e)}"}), 500
+    return _analyze_social_action("share", SHARE_DETECTION_PROMPT, request.form, request.files)
 
 @app.route('/analyze_subscribe_status', methods=['POST'])
 def analyze_subscribe_status():
-    if not gemini_model:
-        app.logger.warning("Gemini model N/A for subscribe analysis.")
-        return jsonify({"error": "Image analysis service unavailable."}), 503
+    return _analyze_social_action("subscribe", SUBSCRIBE_DETECTION_PROMPT, request.form, request.files)
 
-    user, error_response = get_validated_user_from_form(request.form)
-    if error_response: return error_response
-    user_id = user.id
 
-    if 'image' not in request.files: return jsonify({"error": "Missing 'image' file part."}), 400
-    file = request.files['image']
-    if file.filename == '': return jsonify({"error": "No file selected."}), 400
-
-    try:
-        img_bytes = file.read()
-        if not img_bytes: return jsonify({"error": "Empty image file."}), 400
-        img_hash = hashlib.sha256(img_bytes).hexdigest()
-    except Exception as e:
-        app.logger.error(f"User {user_id}: Img hash error (subscribe): {e}", exc_info=True)
-        return jsonify({"error": "Could not process image file."}), 400
-
-    image_user_pair = (user_id, img_hash)
-    if image_user_pair in processed_image_hashes:
-        app.logger.warning(f"User {user_id}: Duplicate img for subscribe: {img_hash}")
-        return jsonify({"status": -1, "message": "Image already processed by you."}), 200
-
-    try:
-        img = Image.open(io.BytesIO(img_bytes))
-        img.verify()
-        img = Image.open(io.BytesIO(img_bytes))
-    except Exception as e:
-        app.logger.error(f"User {user_id}: Invalid img (subscribe, hash {img_hash}): {e}", exc_info=True)
-        return jsonify({"error": "Invalid or corrupted image."}), 400
-
-    try:
-        app.logger.info(f"User {user_id}: Sending img {img_hash} to Gemini (subscribe)...")
-        response = gemini_model.generate_content([SUBSCRIBE_DETECTION_PROMPT, img])
-        if response.parts:
-            raw_result = response.text.strip()
-            app.logger.info(f"User {user_id}: Gemini subscribe raw_result for {img_hash}: '{raw_result}'")
-            if raw_result in ["1", "0"]:
-                processed_image_hashes.add(image_user_pair)
-                app.logger.info(f"User {user_id}: Pair {image_user_pair} added. Set size: {len(processed_image_hashes)}")
-                return jsonify({"status": int(raw_result), "message": "Subscription analysis complete."}), 200
-            else:
-                app.logger.error(f"User {user_id}: Unexpected Gemini (subscribe) for {img_hash}: '{raw_result}'")
-                return jsonify({"error": f"Unexpected analysis result: '{raw_result}'"}), 500
-        else:
-            feedback = response.prompt_feedback if hasattr(response, 'prompt_feedback') else 'N/A'
-            app.logger.error(f"User {user_id}: Gemini no content (subscribe) for {img_hash}. Feedback: {feedback}")
-            return jsonify({"error": "Analysis failed or content blocked."}), 500
-    except Exception as e:
-        app.logger.error(f"User {user_id}: Gemini API error (subscribe) for {img_hash}: {e}", exc_info=True)
-        return jsonify({"error": f"Image analysis error: {str(e)}"}), 500
 @app.route('/advertisements/<int:ad_id>/click', methods=['POST'])
-def click_advertisement(ad_id):
+def click_advertisement(ad_id): # هذا لـ "نقر الرابط" وليس لإجراءات السوشيال ميديا
     if not request.is_json:
         return jsonify({"error": "Request must be JSON"}), 400
     
     data = request.get_json()
-    clicking_user_id = data.get('user_id') # ID المستخدم الذي قام بالنقر
+    clicking_user_id = data.get('user_id') 
 
     if clicking_user_id is None:
         return jsonify({"error": "Missing 'user_id' in request body (user who clicked)"}), 400
@@ -834,61 +838,52 @@ def click_advertisement(ad_id):
 
     if not advertisement:
         return jsonify({"error": f"Advertisement with ID {ad_id} not found"}), 404
-    
     if not clicking_user:
         return jsonify({"error": f"User (clicker) with ID {clicking_user_id} not found"}), 404
-
     if not advertisement.is_approved or not advertisement.is_active:
         return jsonify({"error": "This advertisement is not active or approved for clicks"}), 403
 
     clicked_ids = advertisement.get_clicked_by_user_ids()
     if clicking_user_id in clicked_ids:
-        app.logger.info(f"User {clicking_user_id} already clicked Ad {ad_id}. No new coins awarded to advertiser.")
+        app.logger.info(f"User {clicking_user_id} already clicked Ad link {ad_id}. No new coins awarded to advertiser.")
         return jsonify({
-            "message": "You have already interacted with this advertisement.",
+            "message": "You have already interacted with this advertisement link.",
             "advertisement_id": ad_id,
-            "number_of_clicks": advertisement.number_of_clicks # إرجاع العدد الحالي
-        }), 200 # 200 OK لأن العملية "مفهومة" ولكن لم يتم اتخاذ إجراء جديد
+            "number_of_clicks": advertisement.number_of_clicks
+        }), 200
 
-
-    # --- الحصول على صاحب الإعلان لمنحه العملات ---
     advertiser = User.query.get(advertisement.user_id)
     if not advertiser:
-        # هذا يجب ألا يحدث إذا كانت البيانات متناسقة
         app.logger.error(f"CRITICAL: Advertiser (User ID {advertisement.user_id}) for Ad {ad_id} not found!")
         return jsonify({"error": "Internal server error: Advertiser not found"}), 500
 
     try:
-        # 1. تحديث قائمة الناقرين على الإعلان
         clicked_ids.append(clicking_user_id)
         advertisement.set_clicked_by_user_ids(clicked_ids)
-        
-        # 2. زيادة عدد النقرات الإجمالي
         advertisement.number_of_clicks += 1
         
-        # 3. منح العملات لصاحب الإعلان
-        coins_to_award = advertisement.coin_per_click
-        advertiser.coins += coins_to_award
+        coins_to_award_advertiser = advertisement.coin_per_click
+        advertiser.coins += coins_to_award_advertiser
         
-        advertisement.updated_at = datetime.utcnow() # تحديث وقت تعديل الإعلان
+        advertisement.updated_at = datetime.utcnow()
 
         db.session.commit()
-        app.logger.info(f"User {clicking_user_id} clicked Ad {ad_id}. Advertiser {advertiser.id} awarded {coins_to_award} coins. New balance: {advertiser.coins}")
+        app.logger.info(f"User {clicking_user_id} clicked Ad link {ad_id}. Advertiser {advertiser.id} awarded {coins_to_award_advertiser} coins. New balance: {advertiser.coins}")
         
         return jsonify({
-            "message": "Advertisement clicked successfully!",
+            "message": "Advertisement link clicked successfully!",
             "advertisement_id": ad_id,
             "new_total_clicks_on_ad": advertisement.number_of_clicks,
-            "coins_awarded_to_advertiser": coins_to_award,
-            "advertiser_new_coin_balance": advertiser.coins,
-            "clicked_by_user_ids": advertisement.get_clicked_by_user_ids() # عرض القائمة المحدثة
+            "coins_awarded_to_advertiser": coins_to_award_advertiser,
+            "advertiser_new_coin_balance": advertiser.coins
         }), 200
 
     except Exception as e:
         db.session.rollback()
-        app.logger.error(f"Error processing click on Ad {ad_id} by User {clicking_user_id}: {e}", exc_info=True)
+        app.logger.error(f"Error processing click on Ad link {ad_id} by User {clicking_user_id}: {e}", exc_info=True)
         return jsonify({"error": "Internal Server Error during click processing"}), 500
-@app.route('/users/<int:user_id_param>', methods=['PATCH']) # Renamed user_id
+
+@app.route('/users/<int:user_id_param>', methods=['PATCH'])
 def update_user_data(user_id_param):
     user = User.query.get(user_id_param)
     if user is None: return jsonify({"error": f"User ID {user_id_param} not found"}), 404
@@ -904,16 +899,19 @@ def update_user_data(user_id_param):
         user.phone_number = data['phone_number']
         updated_fields.append('phone_number')
     if 'interests' in data:
-        user.set_interests(data['interests'])
+        user.set_interests(data['interests']) # يجب أن تكون قائمة
         updated_fields.append('interests')
-    if 'add_coins' in data:
+    if 'add_coins' in data: # هذه عملية إدارية، يجب تأمينها
         try:
-            user.coins += int(data['add_coins'])
+            coins_to_add = int(data['add_coins'])
+            if coins_to_add < 0: return jsonify({"error": "'add_coins' must be non-negative"}),400
+            user.coins += coins_to_add
             updated_fields.append('coins_added')
         except (ValueError, TypeError): return jsonify({"error": "'add_coins' must be int"}),400
-    if 'subtract_coins' in data:
+    if 'subtract_coins' in data: # هذه عملية إدارية، يجب تأمينها
         try:
             amount_to_subtract = int(data['subtract_coins'])
+            if amount_to_subtract < 0: return jsonify({"error": "'subtract_coins' must be non-negative"}),400
             user.coins = max(0, user.coins - amount_to_subtract)
             updated_fields.append('coins_subtracted')
         except (ValueError, TypeError): return jsonify({"error": "'subtract_coins' must be int"}),400
@@ -928,7 +926,303 @@ def update_user_data(user_id_param):
         db.session.rollback()
         app.logger.error(f"Error updating user {user_id_param}: {e}", exc_info=True)
         return jsonify({"error": "Internal Server Error"}), 500
+@app.route('/admin/user_ad_actions', methods=['GET']) # تم إضافة /admin/ للدلالة على أنها للمشرف
+def get_all_user_ad_actions():
+    # !!! هام: يجب إضافة آلية تحقق من هوية المشرف هنا قبل تنفيذ هذا الكود !!!
+    # على سبيل المثال، التحقق من توكن JWT أو دور المستخدم
+    # if not current_user_is_admin():
+    #     return jsonify({"error": "Unauthorized access. Admin privileges required."}), 403
 
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 20, type=int) # عدد السجلات في كل صفحة
+        
+        # فلترة اختيارية
+        user_id_filter = request.args.get('user_id', type=int)
+        ad_id_filter = request.args.get('advertisement_id', type=int)
+        action_type_filter = request.args.get('action_type', type=str)
+
+        query = UserAdAction.query
+
+        if user_id_filter:
+            query = query.filter(UserAdAction.user_id == user_id_filter)
+        if ad_id_filter:
+            query = query.filter(UserAdAction.advertisement_id == ad_id_filter)
+        if action_type_filter:
+            query = query.filter(UserAdAction.action_type.ilike(f"%{action_type_filter}%")) # بحث غير حساس لحالة الأحرف
+
+        # الترتيب (يمكنك تغييره حسب الحاجة)
+        actions_query = query.order_by(UserAdAction.created_at.desc())
+        
+        # التقسيم إلى صفحات (Pagination)
+        paginated_actions = actions_query.paginate(page=page, per_page=per_page, error_out=False)
+        
+        actions_list = []
+        for action in paginated_actions.items:
+            actions_list.append({
+                "id": action.id,
+                "user_id": action.user_id,
+                "advertisement_id": action.advertisement_id,
+                "action_type": action.action_type,
+                "created_at": action.created_at.isoformat() if action.created_at else None,
+                # يمكنك إضافة معلومات عن المستخدم أو الإعلان إذا أردت (يتطلب join)
+                # "user_email": action.user.email if action.user else None, 
+                # "advertisement_title": action.advertisement.title if action.advertisement else None
+            })
+        
+        return jsonify({
+            "actions": actions_list,
+            "total_actions": paginated_actions.total,
+            "current_page": paginated_actions.page,
+            "total_pages": paginated_actions.pages,
+            "per_page": paginated_actions.per_page,
+            "has_next": paginated_actions.has_next,
+            "has_prev": paginated_actions.has_prev
+        }), 200
+
+    except Exception as e:
+        app.logger.error(f"Error fetching all UserAdActions: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error fetching user ad actions"}), 500
+@app.route('/users/<int:requesting_user_id>/advertisements/available_for_any_interaction', methods=['GET'])
+def get_ads_available_for_any_interaction(requesting_user_id):
+    user = User.query.get(requesting_user_id)
+    if not user:
+        return jsonify({"error": f"User with ID {requesting_user_id} not found."}), 404
+
+    try:
+        # 1. احصل على الإجراءات (مهام السوشيال ميديا) التي قام بها المستخدم
+        actions_done_by_user_raw = db.session.query(
+                                        UserAdAction.advertisement_id, 
+                                        UserAdAction.action_type).filter(UserAdAction.user_id == requesting_user_id).all()
+        
+        # مجموعة بمعرفات الإعلانات التي قام المستخدم بأي مهمة سوشيال ميديا عليها
+        ads_with_social_interaction_ids = {ad_id for ad_id, _ in actions_done_by_user_raw}
+        app.logger.debug(f"User {requesting_user_id} has social interactions with ad_ids: {ads_with_social_interaction_ids}")
+
+        # 2. احصل على جميع الإعلانات النشطة والموافق عليها
+        #    (يمكنك إضافة فلتر لاستبعاد إعلانات المستخدم نفسه إذا أردت)
+        query = Advertisement.query.filter(
+            Advertisement.is_approved == True,
+            Advertisement.is_active == True
+            # Advertisement.user_id != requesting_user_id # اختياري
+        )
+        all_active_approved_ads = query.order_by(Advertisement.created_at.desc()).all()
+
+        available_ads = []
+        for ad in all_active_approved_ads:
+            # 3. تحقق مما إذا كان المستخدم قد نقر على رابط هذا الإعلان
+            users_who_clicked_this_ad_link = ad.get_clicked_by_user_ids()
+            did_click_link = requesting_user_id in users_who_clicked_this_ad_link
+
+            # 4. تحقق مما إذا كان المستخدم قد قام بأي مهمة سوشيال ميديا على هذا الإعلان
+            did_social_interaction = ad.id in ads_with_social_interaction_ids
+            
+            # 5. إذا لم ينقر على الرابط ولم يقم بأي مهمة سوشيال ميديا، أضف الإعلان
+            if not did_click_link and not did_social_interaction:
+                available_ads.append(ad.to_dict())
+        
+        app.logger.info(f"Found {len(available_ads)} ads available for ANY interaction by user {requesting_user_id}.")
+        return jsonify(available_ads), 200
+
+    except Exception as e:
+        app.logger.error(f"Error fetching ads available for any interaction for user {requesting_user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error"}), 500
+# --- (مع بقية نقاط النهاية في ملف التطبيق) ---
+
+# --- Coin Package Endpoints ---
+
+@app.route('/admin/coin_packages', methods=['POST'])
+def create_coin_package():
+    # !!! هام: يجب إضافة آلية تحقق من هوية المشرف هنا !!!
+    # if not current_user_is_admin():
+    #     return jsonify({"error": "Unauthorized access. Admin privileges required."}), 403
+
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400
+    
+    data = request.get_json()
+    name = data.get('name')
+    amount_str = data.get('amount')
+    price_usd_str = data.get('price_usd') # يمكن أن يكون null
+    description = data.get('description')
+    is_active = data.get('is_active', True) # افتراضيًا نشطة
+
+    if not name or amount_str is None:
+        return jsonify({"error": "Missing required fields: name, amount"}), 400
+
+    try:
+        amount = int(amount_str)
+        if amount <= 0:
+            return jsonify({"error": "Coin 'amount' must be a positive integer."}), 400
+    except ValueError:
+        return jsonify({"error": "'amount' must be a valid integer."}), 400
+
+    price_usd = None
+    if price_usd_str is not None:
+        try:
+            price_usd = float(price_usd_str)
+            if price_usd < 0:
+                return jsonify({"error": "'price_usd' must be a non-negative float."}), 400
+        except ValueError:
+            return jsonify({"error": "'price_usd' must be a valid float or null."}), 400
+
+    if CoinPackage.query.filter_by(name=name).first():
+        return jsonify({"error": f"Coin package with name '{name}' already exists."}), 409
+
+    try:
+        new_package = CoinPackage(
+            name=name,
+            amount=amount,
+            price_usd=price_usd,
+            description=description,
+            is_active=is_active
+        )
+        db.session.add(new_package)
+        db.session.commit()
+        app.logger.info(f"Admin: New coin package created: {new_package.name}")
+        return jsonify({"message": "Coin package created successfully", "package": new_package.to_dict()}), 201
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error creating coin package: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error creating coin package"}), 500
+
+
+@app.route('/coin_packages', methods=['GET']) # نقطة نهاية عامة لعرض الباقات النشطة
+def get_active_coin_packages():
+    try:
+        packages = CoinPackage.query.filter_by(is_active=True).order_by(CoinPackage.amount).all()
+        return jsonify([pkg.to_dict() for pkg in packages]), 200
+    except Exception as e:
+        app.logger.error(f"Error fetching active coin packages: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error"}), 500
+
+@app.route('/admin/coin_packages/all', methods=['GET']) # نقطة نهاية للمشرف لعرض كل الباقات (نشطة وغير نشطة)
+def get_all_coin_packages_admin():
+    # !!! هام: يجب إضافة آلية تحقق من هوية المشرف هنا !!!
+    # if not current_user_is_admin():
+    #     return jsonify({"error": "Unauthorized access. Admin privileges required."}), 403
+    try:
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 10, type=int)
+        
+        paginated_packages = CoinPackage.query.order_by(CoinPackage.amount).paginate(page=page, per_page=per_page, error_out=False)
+        
+        packages_list = [pkg.to_dict() for pkg in paginated_packages.items]
+        
+        return jsonify({
+            "packages": packages_list,
+            "total_packages": paginated_packages.total,
+            "current_page": paginated_packages.page,
+            "total_pages": paginated_packages.pages
+        }), 200
+    except Exception as e:
+        app.logger.error(f"Error fetching all coin packages for admin: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error"}), 500
+
+
+@app.route('/coin_packages/<int:package_id>', methods=['GET'])
+def get_coin_package_by_id(package_id):
+    try:
+        package = CoinPackage.query.get(package_id)
+        if package is None:
+            return jsonify({"error": f"Coin package with ID {package_id} not found."}), 404
+        # يمكنك إضافة شرط هنا للتحقق من is_active إذا كان المستخدم عاديًا
+        # if not package.is_active and not current_user_is_admin(): # مثال
+        #     return jsonify({"error": "Coin package not available."}), 404
+        return jsonify(package.to_dict()), 200
+    except Exception as e:
+        app.logger.error(f"Error fetching coin package {package_id}: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error"}), 500
+
+
+@app.route('/admin/coin_packages/<int:package_id>', methods=['PUT'])
+def update_coin_package(package_id):
+    # !!! هام: يجب إضافة آلية تحقق من هوية المشرف هنا !!!
+    # if not current_user_is_admin():
+    #     return jsonify({"error": "Unauthorized access. Admin privileges required."}), 403
+
+    package = CoinPackage.query.get(package_id)
+    if package is None:
+        return jsonify({"error": f"Coin package with ID {package_id} not found."}), 404
+
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400
+    
+    data = request.get_json()
+    updated_fields = []
+
+    if 'name' in data:
+        new_name = data['name']
+        if new_name != package.name and CoinPackage.query.filter_by(name=new_name).first():
+            return jsonify({"error": f"Coin package name '{new_name}' already exists."}), 409
+        package.name = new_name
+        updated_fields.append('name')
+    
+    if 'amount' in data:
+        try:
+            amount = int(data['amount'])
+            if amount <= 0:
+                return jsonify({"error": "Coin 'amount' must be a positive integer."}), 400
+            package.amount = amount
+            updated_fields.append('amount')
+        except ValueError:
+            return jsonify({"error": "'amount' must be a valid integer."}), 400
+
+    if 'price_usd' in data: # يسمح بتحديث السعر إلى null أيضًا
+        price_usd_str = data['price_usd']
+        if price_usd_str is None:
+            package.price_usd = None
+        else:
+            try:
+                price_usd = float(price_usd_str)
+                if price_usd < 0:
+                    return jsonify({"error": "'price_usd' must be a non-negative float."}), 400
+                package.price_usd = price_usd
+            except ValueError:
+                return jsonify({"error": "'price_usd' must be a valid float or null."}), 400
+        updated_fields.append('price_usd')
+
+    if 'description' in data:
+        package.description = data['description']
+        updated_fields.append('description')
+    
+    if 'is_active' in data:
+        if not isinstance(data['is_active'], bool):
+            return jsonify({"error": "'is_active' must be a boolean."}), 400
+        package.is_active = data['is_active']
+        updated_fields.append('is_active')
+
+    if not updated_fields:
+        return jsonify({"message": "No valid fields provided for update."}), 200
+
+    try:
+        package.updated_at = datetime.utcnow()
+        db.session.commit()
+        app.logger.info(f"Admin: Coin package {package_id} updated. Fields: {', '.join(updated_fields)}")
+        return jsonify({"message": "Coin package updated successfully", "package": package.to_dict()}), 200
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error updating coin package {package_id}: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error updating coin package"}), 500
+
+@app.route('/admin/coin_packages/<int:package_id>', methods=['DELETE'])
+def delete_coin_package(package_id):
+    # !!! هام: يجب إضافة آلية تحقق من هوية المشرف هنا !!!
+    # if not current_user_is_admin():
+    #     return jsonify({"error": "Unauthorized access. Admin privileges required."}), 403
+    
+    package = CoinPackage.query.get(package_id)
+    if package is None:
+        return jsonify({"error": f"Coin package with ID {package_id} not found"}), 404
+    try:
+        db.session.delete(package)
+        db.session.commit()
+        app.logger.info(f"Admin: Coin package {package_id} ({package.name}) deleted.")
+        return jsonify({"message": f"Coin package {package_id} deleted successfully."}), 200
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error deleting coin package {package_id}: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error deleting coin package"}), 500
 # --- التشغيل المحلي ---
 if __name__ == '__main__':
     print("Starting Flask development server (for local testing)...")
