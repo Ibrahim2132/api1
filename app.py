@@ -1204,7 +1204,48 @@ def update_coin_package(package_id):
         db.session.rollback()
         app.logger.error(f"Error updating coin package {package_id}: {e}", exc_info=True)
         return jsonify({"error": "Internal Server Error updating coin package"}), 500
+@app.route('/advertisements/approved', methods=['GET'])
+def get_approved_advertisements():
+    """
+    نقطة نهاية مخصصة لجلب جميع الإعلانات الموافق عليها.
+    تقبل بارامتر اختياري في الرابط 'exclude_user_id' لاستبعاد إعلانات مستخدم معين.
+    مثال (بدون استبعاد): /advertisements/approved
+    مثال (مع استبعاد):   /advertisements/approved?exclude_user_id=5
+    """
+    try:
+        # 1. ابدأ بالاستعلام الأساسي: جلب كل الإعلانات التي is_approved = True
+        query = Advertisement.query.filter_by(is_approved=True)
+        
+        # 2. تحقق من وجود البارامتر الاختياري 'exclude_user_id' في الرابط
+        user_id_to_exclude_str = request.args.get('exclude_user_id')
 
+        # 3. إذا كان البارامتر موجوداً، قم بتطبيقه كفلتر إضافي
+        if user_id_to_exclude_str:
+            try:
+                # تأكد من أن القيمة رقمية لتجنب الأخطاء
+                user_id_to_exclude = int(user_id_to_exclude_str)
+                
+                # أضف الشرط الجديد: حيث "user_id" لا يساوي (!=) الرقم المطلوب استبعاده
+                query = query.filter(Advertisement.user_id != user_id_to_exclude)
+                
+                app.logger.info(f"Fetching approved ads, excluding those from user_id: {user_id_to_exclude}")
+
+            except ValueError:
+                app.logger.warning(f"Invalid 'exclude_user_id' provided: {user_id_to_exclude_str}")
+                return jsonify({"error": "Invalid 'exclude_user_id'. It must be an integer."}), 400
+
+        # 4. ترتيب النتائج من الأحدث إلى الأقدم وتنفيذ الاستعلام
+        approved_ads = query.order_by(Advertisement.created_at.desc()).all()
+        
+        app.logger.info(f"Fetched {len(approved_ads)} approved advertisements after filtering.")
+        
+        # 5. تحويل النتائج إلى صيغة JSON وإرسالها
+        return jsonify([ad.to_dict() for ad in approved_ads]), 200
+
+    except Exception as e:
+        app.logger.error(f"Error fetching approved advertisements: {e}", exc_info=True)
+        return jsonify({"error": "Internal Server Error"}), 500
+        
 @app.route('/admin/coin_packages/<int:package_id>', methods=['DELETE'])
 def delete_coin_package(package_id):
     # !!! هام: يجب إضافة آلية تحقق من هوية المشرف هنا !!!
